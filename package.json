@@ -1,6 +1,13 @@
 {
   "name": "@mikrostack/chbus",
   "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cristianloghin/channel-bus"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "Typed, channel-based event bus with middleware, loop prevention, storm control, and full observability",
   "license": "MIT",
   "main": "./dist/index.cjs",
