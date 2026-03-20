@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /Users/cristianloghin/Documents/_Projects/channels -type d -name *event* -o -name *Event*)",
+      "Bash(grep -E \"\\(package|tsconfig|webpack|vite|index\\\\.ts|\\\\.ts$\\)\")"
+    ]
+  }
+}
