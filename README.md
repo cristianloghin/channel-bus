@@ -16,18 +16,18 @@ npm install @mikrostack/chbus
 import { createBus } from '@mikrostack/chbus'
 
 type PlaybackContract = {
-  'playback:start': { cameraId: string }
-  'playback:stop':  { cameraId: string }
+  'playback:start': { trackId: string }
+  'playback:stop':  { trackId: string }
 }
 
 const bus = createBus()
 const playback = bus.channel<PlaybackContract>('playback')
 
 playback.on('playback:start', (payload) => {
-  console.log('starting', payload.cameraId)
+  console.log('starting', payload.trackId)
 })
 
-playback.emit('playback:start', { cameraId: 'cam-1' }, { from: 'playerService' })
+playback.emit('playback:start', { trackId: 'track-1' }, { from: 'playerService' })
 ```
 
 ---
@@ -79,25 +79,25 @@ import { NamespacedBus } from '@mikrostack/chbus'
 // Library declares what it needs:
 export function createVideoPlayer(bus: NamespacedBus) {
   const playback = bus.channel<PlaybackContract>('playback')
-  // Channels are registered as 'vms:playback' on the root bus.
+  // Channels are registered as 'player:playback' on the root bus.
 }
 
 // Application wires them together:
 const bus = createBus()
-createVideoPlayer(bus.namespace('vms'))
+createVideoPlayer(bus.namespace('player'))
 ```
 
 Channels from different namespaces are fully isolated even when they share an action name.
 
 ```ts
-const ns1 = bus.namespace('vms')
+const ns1 = bus.namespace('player')
 const ns2 = bus.namespace('analytics')
 
-ns1.channel<UIContract>('ui')        // registered as 'vms:ui'
+ns1.channel<UIContract>('ui')        // registered as 'player:ui'
 ns2.channel<UIContract>('ui')        // registered as 'analytics:ui' — distinct instance
 ```
 
-Multiple calls to `bus.namespace('vms')` return independent proxy objects but write to the same underlying channel registry — `ns1.channel('playback')` and `ns2.channel('playback')` (same namespace) return the same `Channel` instance.
+Multiple calls to `bus.namespace('player')` return independent proxy objects but write to the same underlying channel registry — `ns1.channel('playback')` and `ns2.channel('playback')` (same namespace) return the same `Channel` instance.
 
 ---
 
@@ -109,7 +109,7 @@ Registered with `on()` and called by `emit()`. Must be synchronous (any returned
 
 ```ts
 const unsubscribe = playback.on('playback:start', (payload, { message }) => {
-  console.log(message.from, payload.cameraId)
+  console.log(message.from, payload.trackId)
 })
 
 // Later:
@@ -139,10 +139,10 @@ The `message` in meta gives you full context: `id`, `namespace`, `channel`, `act
 Fire-and-forget. Delivers only to subscribers registered with `on()`. Returns immediately; no async work is awaited.
 
 ```ts
-playback.emit('playback:start', { cameraId: 'cam-1' })
+playback.emit('playback:start', { trackId: 'track-1' })
 
 // With sender identity:
-playback.emit('playback:start', { cameraId: 'cam-1' }, { from: 'playerService' })
+playback.emit('playback:start', { trackId: 'track-1' }, { from: 'playerService' })
 ```
 
 ### Async — `emitAsync()`
@@ -212,7 +212,7 @@ Pass the incoming chain through `EmitOptions` when reacting to a message:
 playback.on('playback:start', (payload, { message }) => {
   ui.emit(
     'ui:status-update',
-    { label: `Playing ${payload.cameraId}` },
+    { label: `Playing ${payload.trackId}` },
     {
       from: 'playbackService',
       coordinationChain: [...message.coordinationChain],
@@ -226,7 +226,7 @@ playback.on('playback:start', (payload, { message }) => {
 When a loop is detected a warning is logged to the console and the message is dropped:
 
 ```
-[chbus] Loop detected on channel "vms:ui" action "ui:status-update" from "playbackService"
+[chbus] Loop detected on channel "player:ui" action "ui:status-update" from "playbackService"
 ```
 
 Each channel retains up to 10,000 coordination IDs, evicting the oldest when the limit is reached.
@@ -238,7 +238,7 @@ Each channel retains up to 10,000 coordination IDs, evicting the oldest when the
 Each channel tracks message rates per sender within a sliding window. If a sender exceeds the threshold, subsequent messages are dropped with a warning:
 
 ```
-[chbus] Storm detected on channel "vms:playback" from sender "cameraService" — 101 messages in 1000ms
+[chbus] Storm detected on channel "player:playback" from sender "trackService" — 101 messages in 1000ms
 ```
 
 **Global config** (applies to all channels):
@@ -280,11 +280,11 @@ unsubDebug()
 
 ```ts
 {
-  namespace:         'vms',
+  namespace:         'player',
   channel:           'playback',
-  qualifiedChannel:  'vms:playback',   // 'playback' if no namespace
+  qualifiedChannel:  'player:playback',   // 'playback' if no namespace
   action:            'playback:start',
-  payload:           { cameraId: 'cam-1' },
+  payload:           { trackId: 'track-1' },
   from:              'playerService',
   coordinationChain: ['abc123'],
   timestamp:         1711234567890,
@@ -313,7 +313,7 @@ stop()
 const stop = createLogger(bus, {
   collapsed: false,            // use console.group instead of console.groupCollapsed
   filter: {
-    namespaces: ['vms'],       // only log messages from the 'vms' namespace
+    namespaces: ['player'],       // only log messages from the 'player' namespace
     channels:   ['playback'],  // only log messages from the 'playback' channel
     actions:    ['playback:start'],
   },
@@ -412,9 +412,9 @@ bus.destroy()
 The library is written in strict TypeScript and ships with full `.d.ts` declarations. Payload types are inferred directly from your contract — no casting needed anywhere in the public API.
 
 ```ts
-// Payload is inferred as { cameraId: string }
+// Payload is inferred as { trackId: string }
 playback.on('playback:start', (payload) => {
-  payload.cameraId  // ✓ string
+  payload.trackId  // ✓ string
   payload.unknown   // ✗ TypeScript error
 })
 ```
