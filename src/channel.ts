@@ -87,8 +87,8 @@ export class Channel<C extends ChannelContract> {
     let passed = false
     this.runMiddleware(message, () => {
       passed = true
-      this.deliverSync(action, payload, message)
       this.forwardDebug(message)
+      this.deliverSync(action, payload, message)
     })
     void passed // middleware drop is intentional and silent
   }
@@ -132,12 +132,8 @@ export class Channel<C extends ChannelContract> {
     let deliveryPromise: Promise<SettledResult[]> | null = null
 
     this.runMiddleware(message, () => {
-      deliveryPromise = this.deliverAsync(action, payload, message).then(
-        (results) => {
-          this.forwardDebug(message)
-          return results
-        },
-      )
+      this.forwardDebug(message)
+      deliveryPromise = this.deliverAsync(action, payload, message)
     })
 
     return deliveryPromise ?? []

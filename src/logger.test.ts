@@ -111,6 +111,85 @@ describe('createLogger', () => {
     bus.destroy()
   })
 
+  it('root message shows "(root)" as its chain', () => {
+    vi.spyOn(console, 'groupCollapsed').mockImplementation(() => {})
+    vi.spyOn(console, 'groupEnd').mockImplementation(() => {})
+    const chainValues: unknown[] = []
+    vi.spyOn(console, 'log').mockImplementation((label: unknown, value?: unknown) => {
+      if (label === 'chain:   ') chainValues.push(value)
+    })
+
+    const bus = createBus()
+    const stop = createLogger(bus)
+    const ch = bus.channel<TestContract>('test')
+    ch.on('test:event', () => {})
+    ch.emit('test:event', { value: 1 })
+
+    expect(chainValues).toHaveLength(1)
+    expect(chainValues[0]).toBe('(root)')
+    stop()
+    bus.destroy()
+  })
+
+  it('triggered message resolves ancestor labels into a readable flow', () => {
+    vi.spyOn(console, 'groupCollapsed').mockImplementation(() => {})
+    vi.spyOn(console, 'groupEnd').mockImplementation(() => {})
+    const chainValues: unknown[] = []
+    vi.spyOn(console, 'log').mockImplementation((label: unknown, value?: unknown) => {
+      if (label === 'chain:   ') chainValues.push(value)
+    })
+
+    const bus = createBus()
+    const stop = createLogger(bus)
+    const chA = bus.channel<TestContract>('channelA')
+    const chB = bus.channel<TestContract>('channelB')
+
+    // When channelA fires, its subscriber forwards the coordination chain to channelB.
+    chA.on('test:event', (_, { message }) => {
+      chB.emit('test:event', { value: 2 }, { coordinationChain: message.coordinationChain })
+    })
+    chB.on('test:event', () => {})
+    chA.emit('test:event', { value: 1 })
+
+    // channelA is the root; channelB was triggered by it.
+    expect(chainValues).toHaveLength(2)
+    expect(chainValues[0]).toBe('(root)')
+    expect(chainValues[1]).toBe('[channelA] test:event')
+    stop()
+    bus.destroy()
+  })
+
+  it('three-level chain shows the full readable flow', () => {
+    vi.spyOn(console, 'groupCollapsed').mockImplementation(() => {})
+    vi.spyOn(console, 'groupEnd').mockImplementation(() => {})
+    const chainValues: unknown[] = []
+    vi.spyOn(console, 'log').mockImplementation((label: unknown, value?: unknown) => {
+      if (label === 'chain:   ') chainValues.push(value)
+    })
+
+    const bus = createBus()
+    const stop = createLogger(bus)
+    const chA = bus.channel<TestContract>('chA')
+    const chB = bus.channel<TestContract>('chB')
+    const chC = bus.channel<TestContract>('chC')
+
+    chA.on('test:event', (_, { message }) => {
+      chB.emit('test:event', { value: 2 }, { coordinationChain: message.coordinationChain })
+    })
+    chB.on('test:event', (_, { message }) => {
+      chC.emit('test:event', { value: 3 }, { coordinationChain: message.coordinationChain })
+    })
+    chC.on('test:event', () => {})
+    chA.emit('test:event', { value: 1 })
+
+    expect(chainValues).toHaveLength(3)
+    expect(chainValues[0]).toBe('(root)')
+    expect(chainValues[1]).toBe('[chA] test:event')
+    expect(chainValues[2]).toBe('[chA] test:event → [chB] test:event')
+    stop()
+    bus.destroy()
+  })
+
   it('the stop function unsubscribes from the debug wiretap', () => {
     const gc = vi.spyOn(console, 'groupCollapsed').mockImplementation(() => {})
     vi.spyOn(console, 'log').mockImplementation(() => {})
