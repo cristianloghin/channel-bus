@@ -40,6 +40,7 @@ function passes(
 ): boolean {
   if (!filter) return true
 
+  // Include-lists — each non-empty list must contain the message's value.
   if (filter.namespaces && filter.namespaces.length > 0) {
     if (!filter.namespaces.includes(msg.namespace)) return false
   }
@@ -50,6 +51,20 @@ function passes(
 
   if (filter.actions && filter.actions.length > 0) {
     if (!filter.actions.includes(msg.action)) return false
+  }
+
+  // Exclude-lists — any match blocks the message.
+  if (filter.exclude) {
+    const { exclude } = filter
+
+    if (exclude.namespaces && exclude.namespaces.includes(msg.namespace)) return false
+    if (exclude.channels && exclude.channels.includes(msg.channel)) return false
+    if (exclude.actions && exclude.actions.includes(msg.action)) return false
+  }
+
+  // Predicate — final gate for arbitrary logic.
+  if (filter.predicate && !filter.predicate(msg.action, msg.payload, msg)) {
+    return false
   }
 
   return true

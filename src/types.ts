@@ -77,5 +77,11 @@ export interface LoggerOptions {
     namespaces?: string[]  // only log messages from these namespaces
     channels?: string[]    // only log messages from these unqualified channel names
     actions?: string[]     // only log messages matching these action names
+    exclude?: {
+      namespaces?: string[]  // block messages from these namespaces
+      channels?: string[]    // block messages from these unqualified channel names
+      actions?: string[]     // block messages matching these action names
+    }
+    predicate?: (action: string, payload: unknown, meta: DebugMessage) => boolean
   }
 }
