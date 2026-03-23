@@ -112,6 +112,27 @@ describe('Channel — sync track', () => {
     ch.emit('test:ping', { value: 1 })
     expect(asyncCb).not.toHaveBeenCalled()
   })
+
+  it('abort signal removes the subscriber when aborted', () => {
+    const ch = makeChannel()
+    const cb = vi.fn()
+    const controller = new AbortController()
+    ch.on('test:ping', cb, { signal: controller.signal })
+    ch.emit('test:ping', { value: 1 })
+    controller.abort()
+    ch.emit('test:ping', { value: 2 })
+    expect(cb).toHaveBeenCalledTimes(1)
+  })
+
+  it('abort signal already aborted — subscriber is never registered', () => {
+    const ch = makeChannel()
+    const cb = vi.fn()
+    const controller = new AbortController()
+    controller.abort()
+    ch.on('test:ping', cb, { signal: controller.signal })
+    ch.emit('test:ping', { value: 1 })
+    expect(cb).not.toHaveBeenCalled()
+  })
 })
 
 describe('Channel — async track', () => {
@@ -172,6 +193,27 @@ describe('Channel — async track', () => {
     ch.on('test:ping', syncCb)
     await ch.emitAsync('test:ping', { value: 1 })
     expect(syncCb).not.toHaveBeenCalled()
+  })
+
+  it('abort signal removes the async subscriber when aborted', async () => {
+    const ch = makeChannel()
+    const cb = vi.fn().mockResolvedValue(undefined)
+    const controller = new AbortController()
+    ch.onAsync('test:ping', cb, { signal: controller.signal })
+    await ch.emitAsync('test:ping', { value: 1 })
+    controller.abort()
+    await ch.emitAsync('test:ping', { value: 2 })
+    expect(cb).toHaveBeenCalledTimes(1)
+  })
+
+  it('abort signal already aborted — async subscriber is never registered', async () => {
+    const ch = makeChannel()
+    const cb = vi.fn().mockResolvedValue(undefined)
+    const controller = new AbortController()
+    controller.abort()
+    ch.onAsync('test:ping', cb, { signal: controller.signal })
+    await ch.emitAsync('test:ping', { value: 1 })
+    expect(cb).not.toHaveBeenCalled()
   })
 
   it('returns [] when no async subscribers are registered', async () => {

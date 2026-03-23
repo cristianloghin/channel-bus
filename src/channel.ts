@@ -57,8 +57,16 @@ export class Channel<C extends ChannelContract> {
 
   // Register a synchronous subscriber. Returns an unsubscribe function.
   // Sync subscribers are only called by emit(), never by emitAsync().
-  on<A extends keyof C>(action: A, subscriber: Subscriber<C, A>): () => void {
-    return this.addSubscriber(this.syncSubscribers, action, subscriber)
+  // Pass { signal } to automatically unsubscribe when the signal is aborted.
+  on<A extends keyof C>(
+    action: A,
+    subscriber: Subscriber<C, A>,
+    options?: { signal?: AbortSignal },
+  ): () => void {
+    if (options?.signal?.aborted) return () => {}
+    const unsub = this.addSubscriber(this.syncSubscribers, action, subscriber)
+    options?.signal?.addEventListener('abort', unsub, { once: true })
+    return unsub
   }
 
   // Synchronous fire-and-forget fan-out. Delivers only to subscribers registered
@@ -89,11 +97,16 @@ export class Channel<C extends ChannelContract> {
 
   // Register an asynchronous subscriber. Returns an unsubscribe function.
   // Async subscribers are only called by emitAsync(), never by emit().
+  // Pass { signal } to automatically unsubscribe when the signal is aborted.
   onAsync<A extends keyof C>(
     action: A,
     subscriber: AsyncSubscriber<C, A>,
+    options?: { signal?: AbortSignal },
   ): () => void {
-    return this.addSubscriber(this.asyncSubscribers, action, subscriber)
+    if (options?.signal?.aborted) return () => {}
+    const unsub = this.addSubscriber(this.asyncSubscribers, action, subscriber)
+    options?.signal?.addEventListener('abort', unsub, { once: true })
+    return unsub
   }
 
   // Async fan-out. Delivers only to subscribers registered with onAsync().
