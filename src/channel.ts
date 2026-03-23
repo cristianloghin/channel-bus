@@ -171,8 +171,7 @@ export class Channel<C extends ChannelContract> {
     // Loop check — drop if any ID in the chain was emitted by this channel.
     if (this.loopGuard.isLoop(incomingChain)) {
       console.warn(
-        `[chbus] Loop detected on channel "${this.namespace ? `${this.namespace}:${this.name}` : this.name}" action "${String(action)}" from "${from}"`,
-        incomingChain,
+        `[chbus] Loop detected on channel "${this.namespace ? `${this.namespace}:${this.name}` : this.name}" action "${String(action)}" from "${from}". Incoming chain: ${incomingChain.join(", ")}`,
       );
       return null;
     }
