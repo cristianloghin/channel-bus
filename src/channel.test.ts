@@ -99,6 +99,58 @@ describe("Channel — sync track", () => {
     expect(cb).toHaveBeenCalledTimes(2);
   });
 
+  it("loop check — emitting a different action inside a callback should NOT trigger loop warning", () => {
+    // Regression: channel A emits action "ping", subscriber catches it and emits
+    // action "pong" on the same channel propagating the coordination chain.
+    // This is A→B (one-shot downstream), NOT a loop. The loop guard incorrectly
+    // flags it because the channel's own coordination ID from "ping" is now in
+    // the incoming chain for "pong".
+    const ch = makeChannel();
+    const pongCb = vi.fn();
+    ch.on("test:pong", pongCb);
+
+    ch.on("test:ping", (_, { message }) => {
+      ch.emit("test:pong", { value: "from-ping" }, { coordinationChain: message.coordinationChain });
+    });
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    ch.emit("test:ping", { value: 1 });
+
+    // "pong" is a different action — this is not a loop, so no warning expected
+    expect(warn).not.toHaveBeenCalled();
+    // and the "pong" subscriber should have been called
+    expect(pongCb).toHaveBeenCalledOnce();
+  });
+
+  it("loop check — A→B→A is detected as a loop and the second A is dropped", () => {
+    // chA emits "ping" (A). Subscriber re-emits "pong" (B) — allowed.
+    // The "pong" subscriber then tries to re-emit "ping" (A) — this IS a loop
+    // and must be blocked.
+    const ch = makeChannel();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const secondPingCb = vi.fn();
+
+    ch.on("test:pong", (_, { message }) => {
+      // Attempt to loop back to "ping" — should be blocked
+      ch.emit("test:ping", { value: 99 }, { coordinationChain: message.coordinationChain });
+    });
+
+    ch.on("test:ping", (_, { message }) => {
+      secondPingCb();
+      // Forward chain to "pong"
+      ch.emit("test:pong", { value: "hop" }, { coordinationChain: message.coordinationChain });
+    });
+
+    ch.emit("test:ping", { value: 1 });
+
+    // The "pong" subscriber fired once (the A→B hop was allowed)
+    // The second "ping" inside "pong"'s callback was blocked — so the ping
+    // subscriber fired exactly once (for the original emit, not the looped-back one)
+    expect(secondPingCb).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("[chbus]"));
+  });
+
   it("applies loop check — drops message with own coordination ID in the chain", () => {
     const ch = makeChannel();
     const cb = vi.fn();

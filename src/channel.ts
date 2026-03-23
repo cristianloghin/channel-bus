@@ -168,8 +168,8 @@ export class Channel<C extends ChannelContract> {
     // Storm check — drop if sender is flooding this channel.
     if (!this.stormGuard.check(from)) return null;
 
-    // Loop check — drop if any ID in the chain was emitted by this channel.
-    if (this.loopGuard.isLoop(incomingChain)) {
+    // Loop check — drop if this action's ID is already in the chain (same action looped back).
+    if (this.loopGuard.isLoop(incomingChain, String(action))) {
       console.warn(
         `[chbus] Loop detected on channel "${this.namespace ? `${this.namespace}:${this.name}` : this.name}" action "${String(action)}" from "${from}". Incoming chain: ${incomingChain.join(", ")}`,
       );
@@ -179,7 +179,7 @@ export class Channel<C extends ChannelContract> {
     // Generate a coordination ID for this emission, track it, and append it
     // to the outgoing chain so downstream channels can detect the loop.
     const coordinationId = crypto.randomUUID();
-    this.loopGuard.track(coordinationId);
+    this.loopGuard.track(coordinationId, String(action));
     const coordinationChain = [...incomingChain, coordinationId];
 
     return {
