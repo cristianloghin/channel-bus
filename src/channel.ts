@@ -1,3 +1,5 @@
+import { LoopGuard } from "./loop";
+import { StormGuard } from "./storm";
 import type {
   AsyncSubscriber,
   ChannelContract,
@@ -9,26 +11,24 @@ import type {
   SettledResult,
   StormConfig,
   Subscriber,
-} from './types'
-import { LoopGuard } from './loop'
-import { StormGuard } from './storm'
+} from "./types";
 
 export class Channel<C extends ChannelContract> {
-  readonly name: string       // unqualified channel name
-  readonly namespace: string  // '' if created directly on the root Bus
+  readonly name: string; // unqualified channel name
+  readonly namespace: string; // '' if created directly on the root Bus
 
-  private middlewares: Middleware<C>[] = []
+  private middlewares: Middleware<C>[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private syncSubscribers = new Map<keyof C, Set<Subscriber<C, any>>>()
+  private syncSubscribers = new Map<keyof C, Set<Subscriber<C, any>>>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private asyncSubscribers = new Map<keyof C, Set<AsyncSubscriber<C, any>>>()
-  private stormGuard: StormGuard
-  private loopGuard = new LoopGuard()
-  private destroyed = false
+  private asyncSubscribers = new Map<keyof C, Set<AsyncSubscriber<C, any>>>();
+  private stormGuard: StormGuard;
+  private loopGuard = new LoopGuard();
+  private destroyed = false;
 
   // Injected by the Bus at construction time — forwards every emitted message
   // to the debug wiretap. The channel itself is unaware of the debug channel.
-  private readonly onEmit: (msg: DebugMessage) => void
+  private readonly onEmit: (msg: DebugMessage) => void;
 
   constructor(
     name: string,
@@ -36,12 +36,12 @@ export class Channel<C extends ChannelContract> {
     stormConfig: StormConfig,
     onEmit: (msg: DebugMessage) => void,
   ) {
-    this.name = name
-    this.namespace = namespace
+    this.name = name;
+    this.namespace = namespace;
     // Pass the qualified name so storm warnings include full context.
-    const qualifiedName = namespace ? `${namespace}:${name}` : name
-    this.stormGuard = new StormGuard(qualifiedName, stormConfig)
-    this.onEmit = onEmit
+    const qualifiedName = namespace ? `${namespace}:${name}` : name;
+    this.stormGuard = new StormGuard(qualifiedName, stormConfig);
+    this.onEmit = onEmit;
   }
 
   // ── Middleware ──────────────────────────────────────────────────────────────
@@ -49,8 +49,8 @@ export class Channel<C extends ChannelContract> {
   // Appends to the middleware pipeline. Runs for both emit() and emitAsync().
   // Middleware runs in insertion order and must call next() to continue.
   use(middleware: Middleware<C>): this {
-    this.middlewares.push(middleware)
-    return this
+    this.middlewares.push(middleware);
+    return this;
   }
 
   // ── Sync track ──────────────────────────────────────────────────────────────
@@ -63,10 +63,10 @@ export class Channel<C extends ChannelContract> {
     subscriber: Subscriber<C, A>,
     options?: { signal?: AbortSignal },
   ): () => void {
-    if (options?.signal?.aborted) return () => {}
-    const unsub = this.addSubscriber(this.syncSubscribers, action, subscriber)
-    options?.signal?.addEventListener('abort', unsub, { once: true })
-    return unsub
+    if (options?.signal?.aborted) return () => {};
+    const unsub = this.addSubscriber(this.syncSubscribers, action, subscriber);
+    options?.signal?.addEventListener("abort", unsub, { once: true });
+    return unsub;
   }
 
   // Synchronous fire-and-forget fan-out. Delivers only to subscribers registered
@@ -77,20 +77,20 @@ export class Channel<C extends ChannelContract> {
     options?: EmitOptions,
   ): void {
     if (this.destroyed) {
-      console.warn(`[chbus] emit() called on destroyed channel "${this.name}"`)
-      return
+      console.warn(`[chbus] emit() called on destroyed channel "${this.name}"`);
+      return;
     }
 
-    const message = this.buildMessage(action, payload, options)
-    if (!message) return
+    const message = this.buildMessage(action, payload, options);
+    if (!message) return;
 
-    let passed = false
+    let passed = false;
     this.runMiddleware(message, () => {
-      passed = true
-      this.forwardDebug(message)
-      this.deliverSync(action, payload, message)
-    })
-    void passed // middleware drop is intentional and silent
+      passed = true;
+      this.forwardDebug(message);
+      this.deliverSync(action, payload, message);
+    });
+    void passed; // middleware drop is intentional and silent
   }
 
   // ── Async track ─────────────────────────────────────────────────────────────
@@ -103,10 +103,10 @@ export class Channel<C extends ChannelContract> {
     subscriber: AsyncSubscriber<C, A>,
     options?: { signal?: AbortSignal },
   ): () => void {
-    if (options?.signal?.aborted) return () => {}
-    const unsub = this.addSubscriber(this.asyncSubscribers, action, subscriber)
-    options?.signal?.addEventListener('abort', unsub, { once: true })
-    return unsub
+    if (options?.signal?.aborted) return () => {};
+    const unsub = this.addSubscriber(this.asyncSubscribers, action, subscriber);
+    options?.signal?.addEventListener("abort", unsub, { once: true });
+    return unsub;
   }
 
   // Async fan-out. Delivers only to subscribers registered with onAsync().
@@ -119,35 +119,37 @@ export class Channel<C extends ChannelContract> {
     options?: EmitOptions,
   ): Promise<SettledResult[]> {
     if (this.destroyed) {
-      console.warn(`[chbus] emitAsync() called on destroyed channel "${this.name}"`)
-      return []
+      console.warn(
+        `[chbus] emitAsync() called on destroyed channel "${this.name}"`,
+      );
+      return [];
     }
 
-    const message = this.buildMessage(action, payload, options)
-    if (!message) return []
+    const message = this.buildMessage(action, payload, options);
+    if (!message) return [];
 
     // Since runMiddleware is synchronous, deliveryPromise will be set (or
     // remain null) before runMiddleware returns. A null value means middleware
     // dropped the message — resolve immediately with empty results.
-    let deliveryPromise: Promise<SettledResult[]> | null = null
+    let deliveryPromise: Promise<SettledResult[]> | null = null;
 
     this.runMiddleware(message, () => {
-      this.forwardDebug(message)
-      deliveryPromise = this.deliverAsync(action, payload, message)
-    })
+      this.forwardDebug(message);
+      deliveryPromise = this.deliverAsync(action, payload, message);
+    });
 
-    return deliveryPromise ?? []
+    return deliveryPromise ?? [];
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
 
   destroy(): void {
-    this.destroyed = true
-    this.stormGuard.destroy()
-    this.loopGuard.destroy()
-    this.syncSubscribers.clear()
-    this.asyncSubscribers.clear()
-    this.middlewares.length = 0
+    this.destroyed = true;
+    this.stormGuard.destroy();
+    this.loopGuard.destroy();
+    this.syncSubscribers.clear();
+    this.asyncSubscribers.clear();
+    this.middlewares.length = 0;
   }
 
   // ── Private helpers ──────────────────────────────────────────────────────────
@@ -159,26 +161,27 @@ export class Channel<C extends ChannelContract> {
     payload: C[A],
     options?: EmitOptions,
   ): Message<C, A> | null {
-    const from = options?.from ?? 'anonymous'
-    const incomingChain = options?.coordinationChain ?? []
-    const id = crypto.randomUUID()
+    const from = options?.from ?? "anonymous";
+    const incomingChain = options?.coordinationChain ?? [];
+    const id = crypto.randomUUID();
 
     // Storm check — drop if sender is flooding this channel.
-    if (!this.stormGuard.check(from)) return null
+    if (!this.stormGuard.check(from)) return null;
 
     // Loop check — drop if any ID in the chain was emitted by this channel.
     if (this.loopGuard.isLoop(incomingChain)) {
       console.warn(
         `[chbus] Loop detected on channel "${this.namespace ? `${this.namespace}:${this.name}` : this.name}" action "${String(action)}" from "${from}"`,
-      )
-      return null
+        incomingChain,
+      );
+      return null;
     }
 
     // Generate a coordination ID for this emission, track it, and append it
     // to the outgoing chain so downstream channels can detect the loop.
-    const coordinationId = crypto.randomUUID()
-    this.loopGuard.track(coordinationId)
-    const coordinationChain = [...incomingChain, coordinationId]
+    const coordinationId = crypto.randomUUID();
+    this.loopGuard.track(coordinationId);
+    const coordinationChain = [...incomingChain, coordinationId];
 
     return {
       id,
@@ -189,7 +192,7 @@ export class Channel<C extends ChannelContract> {
       from,
       coordinationChain,
       timestamp: Date.now(),
-    }
+    };
   }
 
   // Delivers a message to all sync subscribers matching the action.
@@ -199,19 +202,21 @@ export class Channel<C extends ChannelContract> {
     message: Message<C, A>,
   ): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const subs = this.syncSubscribers.get(action) as Set<Subscriber<C, A>> | undefined
-    if (!subs) return
+    const subs = this.syncSubscribers.get(action) as
+      | Set<Subscriber<C, A>>
+      | undefined;
+    if (!subs) return;
 
     subs.forEach((subscriber) => {
       try {
-        subscriber(payload, { message })
+        subscriber(payload, { message });
       } catch (error) {
         console.error(
           `[chbus] Error in subscriber on channel "${this.name}" action "${String(action)}":`,
           error,
-        )
+        );
       }
-    })
+    });
   }
 
   // Delivers a message to all async subscribers matching the action.
@@ -222,24 +227,26 @@ export class Channel<C extends ChannelContract> {
     message: Message<C, A>,
   ): Promise<SettledResult[]> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const subs = this.asyncSubscribers.get(action) as Set<AsyncSubscriber<C, A>> | undefined
-    if (!subs || subs.size === 0) return []
+    const subs = this.asyncSubscribers.get(action) as
+      | Set<AsyncSubscriber<C, A>>
+      | undefined;
+    if (!subs || subs.size === 0) return [];
 
     const settled = await Promise.allSettled(
       Array.from(subs).map((subscriber) => subscriber(payload, { message })),
-    )
+    );
 
     return settled.map((result) => ({
       status: result.status,
-      reason: result.status === 'rejected' ? result.reason : undefined,
-    }))
+      reason: result.status === "rejected" ? result.reason : undefined,
+    }));
   }
 
   // Forwards a completed message to the Bus-provided debug wiretap callback.
   private forwardDebug<A extends keyof C>(message: Message<C, A>): void {
     const qualifiedChannel = this.namespace
       ? `${this.namespace}:${this.name}`
-      : this.name
+      : this.name;
 
     this.onEmit({
       namespace: this.namespace,
@@ -251,22 +258,22 @@ export class Channel<C extends ChannelContract> {
       coordinationChain: message.coordinationChain,
       timestamp: message.timestamp,
       messageId: message.id,
-    })
+    });
   }
 
   private runMiddleware(message: Message<C>, done: () => void): void {
-    let index = 0
+    let index = 0;
 
     const next: Next = () => {
       if (index < this.middlewares.length) {
-        const mw = this.middlewares[index++]
-        mw(message, next)
+        const mw = this.middlewares[index++];
+        mw(message, next);
       } else {
-        done()
+        done();
       }
-    }
+    };
 
-    next()
+    next();
   }
 
   // Shared helper for registering subscribers on either track.
@@ -276,17 +283,17 @@ export class Channel<C extends ChannelContract> {
     subscriber: S,
   ): () => void {
     if (!map.has(action)) {
-      map.set(action, new Set())
+      map.set(action, new Set());
     }
 
-    const set = map.get(action)!
-    set.add(subscriber)
+    const set = map.get(action)!;
+    set.add(subscriber);
 
     return () => {
-      set.delete(subscriber)
+      set.delete(subscriber);
       if (set.size === 0) {
-        map.delete(action)
+        map.delete(action);
       }
-    }
+    };
   }
 }
