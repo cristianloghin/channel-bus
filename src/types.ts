@@ -34,19 +34,14 @@ export type Middleware<C extends ChannelContract> = (
   next: Next,
 ) => void
 
-// Synchronous subscriber — registered with on(), called by emit().
-export type Subscriber<C extends ChannelContract, A extends keyof C> = (
+// Async handler — registered with on(), called by emit().
+export type Handler<C extends ChannelContract, A extends keyof C> = (
   payload: C[A],
   meta: { message: Message<C, A> },
-) => void
-
-// Asynchronous subscriber — registered with onAsync(), called by emitAsync().
-export type AsyncSubscriber<C extends ChannelContract, A extends keyof C> = (
-  payload: C[A],
-  meta: { message: Message<C, A> },
+  signal: AbortSignal,
 ) => Promise<void>
 
-// Outcome of a single async subscriber execution returned by emitAsync().
+// Outcome of a single handler execution returned by emit().
 export interface SettledResult {
   status: 'fulfilled' | 'rejected'
   reason?: unknown  // present if status is 'rejected'
@@ -69,6 +64,7 @@ export interface ChannelOptions {
 export interface EmitOptions {
   from?: string                  // sender ID, defaults to 'anonymous'
   coordinationChain?: string[]   // chain from upstream message, for loop detection
+  signal?: AbortSignal           // if aborted before emit, all handlers are skipped
 }
 
 export interface LoggerOptions {

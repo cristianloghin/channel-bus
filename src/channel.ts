@@ -1,17 +1,20 @@
 import { LoopGuard } from "./loop";
 import { StormGuard } from "./storm";
 import type {
-  AsyncSubscriber,
   ChannelContract,
   DebugMessage,
   EmitOptions,
+  Handler,
   Message,
   Middleware,
   Next,
   SettledResult,
   StormConfig,
-  Subscriber,
 } from "./types";
+
+// A signal that never aborts — used when the emitter provides no signal.
+const _noop = new AbortController();
+const NOOP_SIGNAL = _noop.signal;
 
 export class Channel<C extends ChannelContract> {
   readonly name: string; // unqualified channel name
@@ -19,9 +22,7 @@ export class Channel<C extends ChannelContract> {
 
   private middlewares: Middleware<C>[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private syncSubscribers = new Map<keyof C, Set<Subscriber<C, any>>>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private asyncSubscribers = new Map<keyof C, Set<AsyncSubscriber<C, any>>>();
+  private subscribers = new Map<keyof C, Set<Handler<C, any>>>();
   private stormGuard: StormGuard;
   private loopGuard = new LoopGuard();
   private destroyed = false;
@@ -46,84 +47,46 @@ export class Channel<C extends ChannelContract> {
 
   // ── Middleware ──────────────────────────────────────────────────────────────
 
-  // Appends to the middleware pipeline. Runs for both emit() and emitAsync().
+  // Appends to the middleware pipeline. Runs for every emit().
   // Middleware runs in insertion order and must call next() to continue.
   use(middleware: Middleware<C>): this {
     this.middlewares.push(middleware);
     return this;
   }
 
-  // ── Sync track ──────────────────────────────────────────────────────────────
+  // ── Subscription ────────────────────────────────────────────────────────────
 
-  // Register a synchronous subscriber. Returns an unsubscribe function.
-  // Sync subscribers are only called by emit(), never by emitAsync().
+  // Register an async handler. Returns an unsubscribe function.
   // Pass { signal } to automatically unsubscribe when the signal is aborted.
   on<A extends keyof C>(
     action: A,
-    subscriber: Subscriber<C, A>,
+    handler: Handler<C, A>,
     options?: { signal?: AbortSignal },
   ): () => void {
     if (options?.signal?.aborted) return () => {};
-    const unsub = this.addSubscriber(this.syncSubscribers, action, subscriber);
+    const unsub = this.addSubscriber(this.subscribers, action, handler);
     options?.signal?.addEventListener("abort", unsub, { once: true });
     return unsub;
   }
 
-  // Synchronous fire-and-forget fan-out. Delivers only to subscribers registered
-  // with on(). Any Promises returned by subscribers are ignored.
-  emit<A extends keyof C>(
-    action: A,
-    payload: C[A],
-    options?: EmitOptions,
-  ): void {
-    if (this.destroyed) {
-      console.warn(`[chbus] emit() called on destroyed channel "${this.name}"`);
-      return;
-    }
+  // ── Emission ─────────────────────────────────────────────────────────────────
 
-    const message = this.buildMessage(action, payload, options);
-    if (!message) return;
-
-    let passed = false;
-    this.runMiddleware(message, () => {
-      passed = true;
-      this.forwardDebug(message);
-      this.deliverSync(action, payload, message);
-    });
-    void passed; // middleware drop is intentional and silent
-  }
-
-  // ── Async track ─────────────────────────────────────────────────────────────
-
-  // Register an asynchronous subscriber. Returns an unsubscribe function.
-  // Async subscribers are only called by emitAsync(), never by emit().
-  // Pass { signal } to automatically unsubscribe when the signal is aborted.
-  onAsync<A extends keyof C>(
-    action: A,
-    subscriber: AsyncSubscriber<C, A>,
-    options?: { signal?: AbortSignal },
-  ): () => void {
-    if (options?.signal?.aborted) return () => {};
-    const unsub = this.addSubscriber(this.asyncSubscribers, action, subscriber);
-    options?.signal?.addEventListener("abort", unsub, { once: true });
-    return unsub;
-  }
-
-  // Async fan-out. Delivers only to subscribers registered with onAsync().
-  // Returns a Promise that resolves when all async subscribers have settled.
-  // Uses Promise.allSettled — a rejecting subscriber does not prevent others
-  // from running. Returns [] if the message is dropped or no subscribers match.
-  async emitAsync<A extends keyof C>(
+  // Async fan-out. Returns a Promise that resolves when all handlers have settled.
+  // Uses Promise.allSettled — a rejecting handler does not prevent others from
+  // running. Returns [] if the message is dropped, the signal is already aborted,
+  // or no handlers are registered. The caller decides whether to await.
+  async emit<A extends keyof C>(
     action: A,
     payload: C[A],
     options?: EmitOptions,
   ): Promise<SettledResult[]> {
     if (this.destroyed) {
-      console.warn(
-        `[chbus] emitAsync() called on destroyed channel "${this.name}"`,
-      );
+      console.warn(`[chbus] emit() called on destroyed channel "${this.name}"`);
       return [];
     }
+
+    const signal = options?.signal ?? NOOP_SIGNAL;
+    if (signal.aborted) return [];
 
     const message = this.buildMessage(action, payload, options);
     if (!message) return [];
@@ -135,7 +98,7 @@ export class Channel<C extends ChannelContract> {
 
     this.runMiddleware(message, () => {
       this.forwardDebug(message);
-      deliveryPromise = this.deliverAsync(action, payload, message);
+      deliveryPromise = this.deliver(action, payload, message, signal);
     });
 
     return deliveryPromise ?? [];
@@ -147,8 +110,7 @@ export class Channel<C extends ChannelContract> {
     this.destroyed = true;
     this.stormGuard.destroy();
     this.loopGuard.destroy();
-    this.syncSubscribers.clear();
-    this.asyncSubscribers.clear();
+    this.subscribers.clear();
     this.middlewares.length = 0;
   }
 
@@ -168,7 +130,7 @@ export class Channel<C extends ChannelContract> {
     // Storm check — drop if sender is flooding this channel.
     if (!this.stormGuard.check(from)) return null;
 
-    // Loop check — drop if this action's ID is already in the chain (same action looped back).
+    // Loop check — drop if this action's ID is already in the chain.
     if (this.loopGuard.isLoop(incomingChain, String(action))) {
       console.warn(
         `[chbus] Loop detected on channel "${this.namespace ? `${this.namespace}:${this.name}` : this.name}" action "${String(action)}" from "${from}". Incoming chain: ${incomingChain.join(", ")}`,
@@ -194,47 +156,27 @@ export class Channel<C extends ChannelContract> {
     };
   }
 
-  // Delivers a message to all sync subscribers matching the action.
-  private deliverSync<A extends keyof C>(
+  // Delivers a message to all handlers matching the action.
+  // Checks signal before each handler call — if aborted mid-fan-out, remaining
+  // handlers are skipped. Already-running handlers receive the signal and are
+  // responsible for bailing at their own async boundaries.
+  private async deliver<A extends keyof C>(
     action: A,
     payload: C[A],
     message: Message<C, A>,
-  ): void {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const subs = this.syncSubscribers.get(action) as
-      | Set<Subscriber<C, A>>
-      | undefined;
-    if (!subs) return;
-
-    subs.forEach((subscriber) => {
-      try {
-        subscriber(payload, { message });
-      } catch (error) {
-        console.error(
-          `[chbus] Error in subscriber on channel "${this.name}" action "${String(action)}":`,
-          error,
-        );
-      }
-    });
-  }
-
-  // Delivers a message to all async subscribers matching the action.
-  // Uses Promise.allSettled so one failing subscriber cannot block others.
-  private async deliverAsync<A extends keyof C>(
-    action: A,
-    payload: C[A],
-    message: Message<C, A>,
+    signal: AbortSignal,
   ): Promise<SettledResult[]> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const subs = this.asyncSubscribers.get(action) as
-      | Set<AsyncSubscriber<C, A>>
-      | undefined;
+    const subs = this.subscribers.get(action) as Set<Handler<C, A>> | undefined;
     if (!subs || subs.size === 0) return [];
 
-    const settled = await Promise.allSettled(
-      Array.from(subs).map((subscriber) => subscriber(payload, { message })),
-    );
+    const promises: Promise<void>[] = [];
+    for (const handler of subs) {
+      if (signal.aborted) break;
+      promises.push(handler(payload, { message }, signal));
+    }
 
+    const settled = await Promise.allSettled(promises);
     return settled.map((result) => ({
       status: result.status,
       reason: result.status === "rejected" ? result.reason : undefined,
@@ -275,7 +217,7 @@ export class Channel<C extends ChannelContract> {
     next();
   }
 
-  // Shared helper for registering subscribers on either track.
+  // Shared helper for registering handlers.
   private addSubscriber<S>(
     map: Map<keyof C, Set<S>>,
     action: keyof C,
