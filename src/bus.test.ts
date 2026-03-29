@@ -63,7 +63,7 @@ describe('Bus', () => {
     bus.onDebug((msg) => messages.push(msg))
 
     const ch = bus.channel<PlaybackContract>('playback')
-    ch.on('playback:started', () => {})
+    ch.on('playback:started', async () => {})
     ch.emit('playback:started', { cameraId: 'cam-1' }, { from: 'svc' })
 
     expect(messages).toHaveLength(1)
@@ -77,7 +77,7 @@ describe('Bus', () => {
 
     const ns = bus.namespace('vms')
     const ch = ns.channel<PlaybackContract>('playback')
-    ch.on('playback:started', () => {})
+    ch.on('playback:started', async () => {})
     ch.emit('playback:started', { cameraId: 'cam-2' }, { from: 'playerCore' })
 
     const msg = messages[0]

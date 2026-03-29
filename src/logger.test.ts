@@ -19,7 +19,7 @@ describe('createLogger', () => {
     const bus = createBus()
     const stop = createLogger(bus)
     const ch = bus.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
     ch.emit('test:event', { value: 1 })
 
     expect(gc).toHaveBeenCalled()
@@ -35,7 +35,7 @@ describe('createLogger', () => {
     const bus = createBus()
     const stop = createLogger(bus, { collapsed: false })
     const ch = bus.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
     ch.emit('test:event', { value: 1 })
 
     expect(g).toHaveBeenCalled()
@@ -50,7 +50,7 @@ describe('createLogger', () => {
     const stop = createLogger(bus, { filter: { namespaces: ['other'] } })
     const ns = bus.namespace('vms')
     const ch = ns.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
     ch.emit('test:event', { value: 1 })
 
     expect(gc).not.toHaveBeenCalled()
@@ -67,7 +67,7 @@ describe('createLogger', () => {
     const stop = createLogger(bus, { filter: { namespaces: ['vms'] } })
     const ns = bus.namespace('vms')
     const ch = ns.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
     ch.emit('test:event', { value: 1 })
 
     expect(gc).toHaveBeenCalled()
@@ -85,8 +85,8 @@ describe('createLogger', () => {
 
     const ch1 = bus.channel<TestContract>('playback')
     const ch2 = bus.channel<TestContract>('ui')
-    ch1.on('test:event', () => {})
-    ch2.on('test:event', () => {})
+    ch1.on('test:event', async () => {})
+    ch2.on('test:event', async () => {})
     ch1.emit('test:event', { value: 1 })
     ch2.emit('test:event', { value: 2 })
 
@@ -103,7 +103,7 @@ describe('createLogger', () => {
     const bus = createBus()
     const stop = createLogger(bus, { filter: { actions: ['test:event'] } })
     const ch = bus.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
     ch.emit('test:event', { value: 1 })
 
     expect(gc).toHaveBeenCalledTimes(1)
@@ -122,7 +122,7 @@ describe('createLogger', () => {
     const bus = createBus()
     const stop = createLogger(bus)
     const ch = bus.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
     ch.emit('test:event', { value: 1 })
 
     expect(chainValues).toHaveLength(1)
@@ -145,10 +145,10 @@ describe('createLogger', () => {
     const chB = bus.channel<TestContract>('channelB')
 
     // When channelA fires, its subscriber forwards the coordination chain to channelB.
-    chA.on('test:event', (_, { message }) => {
+    chA.on('test:event', async (_, { message }) => {
       chB.emit('test:event', { value: 2 }, { coordinationChain: message.coordinationChain })
     })
-    chB.on('test:event', () => {})
+    chB.on('test:event', async () => {})
     chA.emit('test:event', { value: 1 })
 
     // channelA is the root; channelB was triggered by it.
@@ -173,13 +173,13 @@ describe('createLogger', () => {
     const chB = bus.channel<TestContract>('chB')
     const chC = bus.channel<TestContract>('chC')
 
-    chA.on('test:event', (_, { message }) => {
+    chA.on('test:event', async (_, { message }) => {
       chB.emit('test:event', { value: 2 }, { coordinationChain: message.coordinationChain })
     })
-    chB.on('test:event', (_, { message }) => {
+    chB.on('test:event', async (_, { message }) => {
       chC.emit('test:event', { value: 3 }, { coordinationChain: message.coordinationChain })
     })
-    chC.on('test:event', () => {})
+    chC.on('test:event', async () => {})
     chA.emit('test:event', { value: 1 })
 
     expect(chainValues).toHaveLength(3)
@@ -198,7 +198,7 @@ describe('createLogger', () => {
     const bus = createBus()
     const stop = createLogger(bus)
     const ch = bus.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
 
     stop() // unsubscribe before emitting
 
@@ -216,7 +216,7 @@ describe('createLogger', () => {
     const stop = createLogger(bus, { filter: { exclude: { namespaces: ['vms'] } } })
     const ns = bus.namespace('vms')
     const ch = ns.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
     ch.emit('test:event', { value: 1 })
 
     expect(gc).not.toHaveBeenCalled()
@@ -234,8 +234,8 @@ describe('createLogger', () => {
 
     const ch1 = bus.channel<TestContract>('noisy')
     const ch2 = bus.channel<TestContract>('test')
-    ch1.on('test:event', () => {})
-    ch2.on('test:event', () => {})
+    ch1.on('test:event', async () => {})
+    ch2.on('test:event', async () => {})
     ch1.emit('test:event', { value: 1 })
     ch2.emit('test:event', { value: 2 })
 
@@ -252,7 +252,7 @@ describe('createLogger', () => {
     const bus = createBus()
     const stop = createLogger(bus, { filter: { exclude: { actions: ['test:event'] } } })
     const ch = bus.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
     ch.emit('test:event', { value: 1 })
 
     expect(gc).not.toHaveBeenCalled()
@@ -268,7 +268,7 @@ describe('createLogger', () => {
       filter: { predicate: (_action, payload) => (payload as { value: number }).value !== 42 },
     })
     const ch = bus.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
     ch.emit('test:event', { value: 42 })
 
     expect(gc).not.toHaveBeenCalled()
@@ -286,7 +286,7 @@ describe('createLogger', () => {
       filter: { predicate: (_action, payload) => (payload as { value: number }).value !== 42 },
     })
     const ch = bus.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
     ch.emit('test:event', { value: 1 })
 
     expect(gc).toHaveBeenCalledTimes(1)
@@ -303,7 +303,7 @@ describe('createLogger', () => {
     const predicate = vi.fn().mockReturnValue(true)
     const stop = createLogger(bus, { filter: { predicate } })
     const ch = bus.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
     ch.emit('test:event', { value: 7 })
 
     expect(predicate).toHaveBeenCalledOnce()
@@ -326,7 +326,7 @@ describe('createLogger', () => {
       filter: { channels: ['test'], exclude: { actions: ['test:event'] } },
     })
     const ch = bus.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
     ch.emit('test:event', { value: 1 })
 
     expect(gc).not.toHaveBeenCalled()
@@ -342,7 +342,7 @@ describe('createLogger', () => {
     const bus = createBus()
     const stop = createLogger(bus)
     const ch = bus.channel<TestContract>('test')
-    ch.on('test:event', () => {})
+    ch.on('test:event', async () => {})
 
     ch.emit('test:event', { value: 1 })
     expect(gc).toHaveBeenCalledTimes(1)

@@ -1,3 +1,8 @@
+// A signal that never aborts — used as the default when no signal is provided.
+// Exported so consumers can detect it and avoid adding permanent listeners.
+const _inertController = new AbortController()
+export const INERT_SIGNAL: AbortSignal = _inertController.signal
+
 export function combineSignals(
   ...signals: (AbortSignal | undefined)[]
 ): AbortSignal {

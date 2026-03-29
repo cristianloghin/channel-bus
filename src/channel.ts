@@ -1,4 +1,5 @@
 import { LoopGuard } from "./loop";
+import { INERT_SIGNAL } from "./signals";
 import { StormGuard } from "./storm";
 import type {
   ChannelContract,
@@ -12,9 +13,6 @@ import type {
   StormConfig,
 } from "./types";
 
-// A signal that never aborts — used when the emitter provides no signal.
-const _noop = new AbortController();
-const NOOP_SIGNAL = _noop.signal;
 
 export class Channel<C extends ChannelContract> {
   readonly name: string; // unqualified channel name
@@ -85,7 +83,7 @@ export class Channel<C extends ChannelContract> {
       return [];
     }
 
-    const signal = options?.signal ?? NOOP_SIGNAL;
+    const signal = options?.signal ?? INERT_SIGNAL;
     if (signal.aborted) return [];
 
     const message = this.buildMessage(action, payload, options);

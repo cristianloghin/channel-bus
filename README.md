@@ -1,6 +1,14 @@
 # @mikrostack/chbus
 
-A typed, channel-based event bus for TypeScript. Organise messaging into named, strongly-typed channels with middleware pipelines, loop detection, storm control, and dual sync/async delivery tracks. A built-in debug wiretap and console logger give full observability with zero coupling to your application code.
+A typed, channel-based event bus for TypeScript. Organise messaging into named, strongly-typed channels with middleware pipelines, loop detection, storm control, and full observability. The **Mailbox** layer adds per-participant serial execution and priority interrupt rules on top of plain channels — making it the preferred way to receive messages in most applications.
+
+## When to use chbus
+
+If you need a **lightweight typed event emitter** and nothing else, [mitt](https://github.com/developit/mitt) or [nanoevents](https://github.com/ai/nanoevents) are simpler choices. If you need **push-based reactive streams** with composable operators, reach for [RxJS](https://rxjs.dev).
+
+chbus is the right fit when you need more than a basic emitter but less than a full reactive system — specifically when your application has subsystems that must **process messages serially**, respond differently to **competing messages** (replace, abort, or drop), and benefit from built-in loop detection, storm control, and observability without the overhead of setting all that up manually.
+
+---
 
 ## Installation
 
@@ -23,11 +31,18 @@ type PlaybackContract = {
 const bus = createBus()
 const playback = bus.channel<PlaybackContract>('playback')
 
-playback.on('playback:start', (payload) => {
+// Preferred: receive messages through a Mailbox
+const mailbox = bus.createMailbox({ playback })
+
+mailbox.on('playback', 'playback:start', async (payload, meta, signal) => {
   console.log('starting', payload.trackId)
 })
 
 playback.emit('playback:start', { trackId: 'track-1' }, { from: 'playerService' })
+
+// Teardown
+mailbox.destroy()
+bus.destroy()
 ```
 
 ---
@@ -69,114 +84,256 @@ Calling `bus.channel('ui')` more than once returns the same instance — channel
 
 ---
 
-## Namespaced bus
+## Mailbox
 
-When a third-party library integrates with chbus, it should receive a `NamespacedBus` rather than the root `Bus`. A `NamespacedBus` scopes all channel creation to a single namespace and deliberately does not expose `onDebug()` or `namespace()`.
+A **Mailbox** is the recommended way to receive messages. It sits between channels and your handler code and provides:
 
-```ts
-import { NamespacedBus } from '@mikrostack/chbus'
+- **Serial execution** — one handler at a time per channel; the next message waits until the current one finishes.
+- **Interrupt rules** — declare what happens when a higher-priority message arrives while another is running.
+- **Signal management** — every handler receives an `AbortSignal` that is automatically aborted when an interrupt rule fires. Emitter signals propagate through transparently.
 
-// Library declares what it needs:
-export function createVideoPlayer(bus: NamespacedBus) {
-  const playback = bus.channel<PlaybackContract>('playback')
-  // Channels are registered as 'player:playback' on the root bus.
-}
+Channels remain plain observable wires. All delivery policy lives in the mailbox.
 
-// Application wires them together:
-const bus = createBus()
-createVideoPlayer(bus.namespace('player'))
-```
-
-Channels from different namespaces are fully isolated even when they share an action name.
+### Creating a mailbox
 
 ```ts
-const ns1 = bus.namespace('player')
-const ns2 = bus.namespace('analytics')
-
-ns1.channel<UIContract>('ui')        // registered as 'player:ui'
-ns2.channel<UIContract>('ui')        // registered as 'analytics:ui' — distinct instance
+const mailbox = bus.createMailbox(
+  {
+    videoControl: playback,   // Channel<PlaybackContract>
+    camera: cameraChannel,    // Channel<CameraContract>
+  },
+  // Rules are optional — omit entirely for a plain serial queue
+  {
+    videoControl: {
+      seek: [
+        { interrupts: 'tick', mode: 'abort' },
+      ],
+      tick: [
+        { interrupts: 'tick', mode: 'replace' },
+      ],
+    },
+    // camera omitted — no rules, plain serial queue
+  },
+)
 ```
 
-Multiple calls to `bus.namespace('player')` return independent proxy objects but write to the same underlying channel registry — `ns1.channel('playback')` and `ns2.channel('playback')` (same namespace) return the same `Channel` instance.
+Pass any number of channel keys in the first argument. Rule declarations are optional per channel, and the rules argument itself is optional.
+
+### Registering handlers
+
+```ts
+// Handler signature: payload, meta, signal — same as channel.on
+mailbox.on('videoControl', 'seek', async (payload, meta, signal) => {
+  await handleSeek(payload, signal)
+})
+
+mailbox.on('videoControl', 'tick', async (payload, meta, signal) => {
+  await handleTick(payload, signal)
+})
+
+mailbox.on('camera', 'camera-select', async (payload, meta, signal) => {
+  await handleCameraSelect(payload, signal)
+})
+```
+
+One handler per action per channel. Registering a second handler for the same action throws immediately.
+
+### Interrupt modes
+
+Rules are keyed by the **arriving** action and specify which running action they interrupt and how.
+
+#### `replace`
+
+Aborts the running handler. Clears all pending instances of the interrupted type from the queue. Places the new arrival at the front.
+
+Use when only the latest instance of a message type is meaningful — the arrival makes all in-flight and queued work of that type irrelevant.
+
+```
+tick arrives, tick is running, two more ticks are queued
+→ abort running tick, remove both queued ticks
+→ queue: [tick(new)]
+```
+
+```ts
+// Only the latest tick ever matters
+tick: [{ interrupts: 'tick', mode: 'replace' }]
+```
+
+#### `abort`
+
+Aborts the running handler and discards it. Places the new arrival at the front. Other pending messages are not touched.
+
+Use when the arrival should interrupt current work but the remaining queue should stay intact. The interrupted message is not re-queued — if fresh instances will arrive naturally there is no need to preserve the old one.
+
+```
+seek arrives, tick is running, buffer-update is pending
+→ abort tick, discard it
+→ queue: [seek, buffer-update]
+```
+
+```ts
+// A seek interrupts any running tick but leaves other pending work alone
+seek: [{ interrupts: 'tick', mode: 'abort' }]
+```
+
+#### `drop-new`
+
+Discards the arriving message. The running handler completes undisturbed.
+
+Use when in-flight work must finish before the same type runs again — a guard against duplicate initialisations.
+
+```
+init arrives, init is running
+→ incoming init is dropped
+→ queue: [init(running)]
+```
+
+```ts
+// Ignore duplicate inits while one is already running
+init: [{ interrupts: 'init', mode: 'drop-new' }]
+```
+
+### Self-rules
+
+A rule where the arriving type and the interrupted type are the same governs what happens when a message arrives while the same type is already executing. All three modes apply:
+
+| Pattern | Mode | Meaning |
+|---|---|---|
+| `tick: [{ interrupts: 'tick', mode: 'replace' }]` | `replace` | Only the latest tick ever runs |
+| `init: [{ interrupts: 'init', mode: 'drop-new' }]` | `drop-new` | Run once, ignore duplicates |
+| `seek: [{ interrupts: 'seek', mode: 'abort' }]` | `abort` | Stop current seek, start new one |
+
+### Signal handling
+
+Every handler receives a pre-composed `AbortSignal` as its third argument. The signal is always present — handlers never need to null-check it.
+
+When an interrupt rule fires and aborts a running handler, the handler's signal is aborted. Handlers are responsible for checking `signal.aborted` at async boundaries and propagating the signal to downstream calls. The mailbox does not force-terminate a handler — one that ignores the signal runs to completion, and the next message will not dequeue until it does.
+
+```ts
+mailbox.on('videoControl', 'seek', async (payload, meta, signal) => {
+  for (const chunk of payload.chunks) {
+    if (signal.aborted) return   // bail early when interrupted
+    await processChunk(chunk, signal)
+  }
+})
+```
+
+The signal is a combination of two sources via `combineSignals`:
+- **Mailbox signal** — aborted when an interrupt rule fires.
+- **Emitter signal** — if the original `channel.emit` call included a `signal` in its options, it is propagated here. If the emitter provided no signal, this source is silent.
+
+```ts
+// Emitter signal propagates through the mailbox to the handler
+const controller = new AbortController()
+playback.emit('seek', { position: 30 }, { signal: controller.signal })
+
+// The handler's signal will abort when either source aborts
+```
+
+### Teardown
+
+```ts
+mailbox.destroy()
+```
+
+Unsubscribes from all channels and aborts any in-flight handler's signal immediately. The mailbox cannot be reused after `destroy()`.
+
+### Type inference
+
+Channel keys and action names are fully inferred from the channel instances passed as the first argument. No manual type annotation is needed anywhere.
+
+```ts
+// TypeScript error — 'unknown-action' is not a key of PlaybackContract
+mailbox.on('videoControl', 'unknown-action', handler)
+
+// TypeScript error — payload.position does not exist on tick's payload type
+mailbox.on('videoControl', 'tick', async ({ position }) => { ... })
+```
 
 ---
 
-## Subscribing
+## Channel — direct use
 
-### Sync subscribers — `on()`
+For simple notification or broadcast patterns where serial execution and interrupts are not needed, you can subscribe directly to a channel with `channel.on()`.
 
-Registered with `on()` and called by `emit()`. Must be synchronous (any returned value is ignored).
+### Subscribing — `on()`
 
 ```ts
-const unsubscribe = playback.on('playback:start', (payload, { message }) => {
-  console.log(message.from, payload.trackId)
+const unsub = playback.on('playback:start', async (payload, meta, signal) => {
+  console.log(meta.message.from, payload.trackId)
 })
 
 // Later:
-unsubscribe()
+unsub()
 ```
 
-### Async subscribers — `onAsync()`
-
-Registered with `onAsync()` and called by `emitAsync()`. Must return a `Promise<void>`.
+Handler signature:
 
 ```ts
-const unsubscribe = buffer.onAsync('buffer:flush', async (payload) => {
-  await writeToDisk(payload.data)
-})
+async (payload, meta, signal) => void
 ```
 
-The two tracks are completely separate — `on()` subscribers are never called by `emitAsync()`, and `onAsync()` subscribers are never called by `emit()`.
+- `payload` — the message payload, typed from the channel contract.
+- `meta.message` — the full `Message` object: `id`, `namespace`, `channel`, `action`, `from`, `coordinationChain`, `timestamp`.
+- `signal` — an `AbortSignal`. Always present. If the emitter provided a signal in `EmitOptions`, this is that signal. If none was provided, this is a no-op signal that never aborts. Handlers never need to null-check it.
 
-The `message` in meta gives you full context: `id`, `namespace`, `channel`, `action`, `from`, `coordinationChain`, `timestamp`.
-
----
-
-## Emitting
-
-### Sync — `emit()`
-
-Fire-and-forget. Delivers only to subscribers registered with `on()`. Returns immediately; no async work is awaited.
+Pass `{ signal }` in options to automatically unsubscribe when an `AbortSignal` fires:
 
 ```ts
+const controller = new AbortController()
+
+playback.on('playback:start', handler, { signal: controller.signal })
+
+// Unsubscribes automatically when the signal aborts:
+controller.abort()
+```
+
+> **Note:** When multiple subscribers are registered for the same action on a plain channel, they all receive every message concurrently via `Promise.allSettled`. If you need serial execution or priority rules, use a [Mailbox](#mailbox) instead.
+
+### Emitting — `emit()`
+
+`emit()` is always async — it returns `Promise<SettledResult[]>` and fans out to all subscribers registered with `on()` using `Promise.allSettled`.
+
+**The caller decides whether to await:**
+
+```ts
+// Fire-and-forget — the promise is intentionally not awaited
 playback.emit('playback:start', { trackId: 'track-1' })
 
-// With sender identity:
-playback.emit('playback:start', { trackId: 'track-1' }, { from: 'playerService' })
-```
+// Fire-and-forget with an abort signal
+const ac = new AbortController()
+playback.emit('playback:start', { trackId: 'track-1' }, { signal: ac.signal })
 
-### Async — `emitAsync()`
-
-Delivers only to subscribers registered with `onAsync()`. Awaits all of them in parallel using `Promise.allSettled` and returns their outcomes as `SettledResult[]`.
-
-```ts
-buffer.onAsync('buffer:flush', async (payload) => {
-  await writeToDisk(payload.data)
-})
-
-const results = await buffer.emitAsync('buffer:flush', { data: pendingFrames })
+// Awaitable — wait for all handlers to settle
+const results = await playback.emit('playback:start', { trackId: 'track-1' }, { from: 'player' })
 
 results.forEach((r) => {
-  if (r.status === 'rejected') console.error('subscriber failed:', r.reason)
+  if (r.status === 'rejected') console.error('handler failed:', r.reason)
 })
 ```
 
-Because `allSettled` is used, a failing subscriber never prevents others from running. `emitAsync` returns `[]` if no async subscribers are registered or if the message is dropped.
+A failing subscriber never prevents others from running — `allSettled` guarantees full fan-out. `emit()` returns `[]` when no subscribers are registered, when the message is dropped by a guard, or when the signal was already aborted at call time.
 
-### Choosing an emit method
+#### Emit signal
 
-| | `emit` | `emitAsync` |
-|---|---|---|
-| Subscriber track | `on()` | `onAsync()` |
-| Awaitable | No | Yes — `Promise<SettledResult[]>` |
-| Isolation | Sync only | Async only |
-| Use when | Notifications, broadcasts | Critical side-effects must complete before proceeding |
+Pass a `signal` in `EmitOptions` to allow the emitter to cancel delivery:
+
+```ts
+const controller = new AbortController()
+
+playback.emit('seek', { position: 1200 }, { signal: controller.signal })
+
+// If aborted before any subscriber runs — all subscribers are skipped, resolves []
+// If aborted mid-fan-out — unstarted subscribers are skipped; running ones receive
+//   the signal and are responsible for checking it at their own async boundaries
+controller.abort()
+```
 
 ---
 
 ## Middleware
 
-Middleware runs in insertion order before subscribers are notified. It applies to **both** `emit()` and `emitAsync()`. Each middleware receives the full typed `Message` and a `next` function. If `next()` is not called the message is silently dropped.
+Middleware runs in insertion order before subscribers are notified. Each middleware receives the full typed `Message` and a `next` function. If `next()` is not called the message is silently dropped.
 
 ```ts
 playback.use((message, next) => {
@@ -202,6 +359,38 @@ channel
 
 ---
 
+## Namespaced bus
+
+When a third-party library integrates with chbus, it should receive a `NamespacedBus` rather than the root `Bus`. A `NamespacedBus` scopes all channel creation to a single namespace and deliberately does not expose `onDebug()` or `namespace()`.
+
+```ts
+import { NamespacedBus } from '@mikrostack/chbus'
+
+// Library declares what it needs:
+export function createVideoPlayer(bus: NamespacedBus) {
+  const playback = bus.channel<PlaybackContract>('playback')
+  // Channels are registered as 'player:playback' on the root bus.
+}
+
+// Application wires them together:
+const bus = createBus()
+createVideoPlayer(bus.namespace('player'))
+```
+
+Channels from different namespaces are fully isolated even when they share an action name.
+
+```ts
+const ns1 = bus.namespace('player')
+const ns2 = bus.namespace('analytics')
+
+ns1.channel<UIContract>('ui')   // registered as 'player:ui'
+ns2.channel<UIContract>('ui')   // registered as 'analytics:ui' — distinct instance
+```
+
+Multiple calls to `bus.namespace('player')` return independent proxy objects but write to the same underlying channel registry — `ns1.channel('playback')` and `ns2.channel('playback')` (same namespace) return the same `Channel` instance.
+
+---
+
 ## Loop detection
 
 When multiple channels are wired together it is easy to create event cycles (A emits → B reacts → A emits → …). chbus automatically detects and drops looping messages using a coordination chain appended to every emitted message.
@@ -209,7 +398,7 @@ When multiple channels are wired together it is easy to create event cycles (A e
 Pass the incoming chain through `EmitOptions` when reacting to a message:
 
 ```ts
-playback.on('playback:start', (payload, { message }) => {
+playback.on('playback:start', async (payload, { message }) => {
   ui.emit(
     'ui:status-update',
     { label: `Playing ${payload.trackId}` },
@@ -311,10 +500,10 @@ stop()
 
 ```ts
 const stop = createLogger(bus, {
-  collapsed: false,            // use console.group instead of console.groupCollapsed
+  collapsed: false,               // use console.group instead of console.groupCollapsed
   filter: {
     namespaces: ['player'],       // only log messages from the 'player' namespace
-    channels:   ['playback'],  // only log messages from the 'playback' channel
+    channels:   ['playback'],     // only log messages from the 'playback' channel
     actions:    ['playback:start'],
   },
 })
@@ -326,13 +515,20 @@ All filter arrays are optional and independent — combine them to narrow output
 
 ## Lifecycle
 
-Channels and the bus expose a `destroy()` method that clears all subscribers, cancels pending timers, and releases internal state. Calling `emit()` or `emitAsync()` on a destroyed channel is a no-op and logs a warning.
+Channels and the bus expose a `destroy()` method that clears all subscribers, cancels pending timers, and releases internal state. Calling `emit()` on a destroyed channel is a no-op and logs a warning.
 
 ```ts
 // Destroy a single channel:
 playback.destroy()
 
 // Destroy the bus and all its channels:
+bus.destroy()
+```
+
+Always call `mailbox.destroy()` before `bus.destroy()` to ensure in-flight handlers are signalled and channel subscriptions are cleaned up properly.
+
+```ts
+mailbox.destroy()
 bus.destroy()
 ```
 
@@ -347,14 +543,47 @@ bus.destroy()
 | `storm.maxMessages` | `number` | `100` | Max messages per sender per window |
 | `storm.windowMs` | `number` | `1000` | Window duration in milliseconds |
 
+---
+
 ### `Bus`
 
 | Method | Returns | Description |
 |---|---|---|
 | `channel<C>(name, options?)` | `Channel<C>` | Get or create a channel. Throws for `'debug'`. |
 | `namespace(name)` | `NamespacedBus` | Create a namespaced proxy for library integration. |
+| `createMailbox(channels, rules?)` | `Mailbox<Channels>` | Create a mailbox over one or more channels. |
 | `onDebug(handler)` | `() => void` | Subscribe to the debug wiretap. Returns unsubscribe. |
 | `destroy()` | `void` | Destroy all channels and clear internal state. |
+
+---
+
+### `Mailbox<Channels>`
+
+Created via `bus.createMailbox()`.
+
+| Method | Returns | Description |
+|---|---|---|
+| `on(channelKey, action, handler)` | `void` | Register a handler. Throws if a handler is already registered for this action. |
+| `destroy()` | `void` | Unsubscribe all channels and abort any in-flight handler. |
+
+**Handler signature:**
+
+```ts
+async (payload: C[A], meta: { message: Message<C, A> }, signal: AbortSignal) => void
+```
+
+**Rules shape:**
+
+```ts
+type MailboxRules<C> = {
+  [action in keyof C]?: Array<{
+    interrupts: keyof C
+    mode: 'replace' | 'abort' | 'drop-new'
+  }>
+}
+```
+
+---
 
 ### `NamespacedBus`
 
@@ -363,6 +592,8 @@ bus.destroy()
 | `namespace` | `string` | The namespace this proxy is scoped to. |
 | `channel<C>(name, options?)` | `Channel<C>` | Get or create a namespaced channel. |
 
+---
+
 ### `Channel<C>`
 
 | Property / Method | Returns | Description |
@@ -370,17 +601,11 @@ bus.destroy()
 | `name` | `string` | Unqualified channel name. |
 | `namespace` | `string` | Namespace, or `''` if none. |
 | `use(middleware)` | `this` | Append middleware to the pipeline. |
-| `on(action, subscriber)` | `() => void` | Register a sync subscriber. Returns unsubscribe. |
-| `onAsync(action, subscriber)` | `() => void` | Register an async subscriber. Returns unsubscribe. |
-| `emit(action, payload, options?)` | `void` | Sync fire-and-forget. Delivers to `on()` subscribers only. |
-| `emitAsync(action, payload, options?)` | `Promise<SettledResult[]>` | Async fan-out. Delivers to `onAsync()` subscribers only. |
-| `destroy()` | `void` | Clear all subscribers, timers, and state. |
+| `on(action, handler, options?)` | `() => void` | Register an async handler. Returns unsubscribe. |
+| `emit(action, payload, options?)` | `Promise<SettledResult[]>` | Fan-out to all handlers. Awaitable or fire-and-forget. |
+| `destroy()` | `void` | Clear all handlers, timers, and state. |
 
-### `ChannelOptions`
-
-| Field | Type | Description |
-|---|---|---|
-| `storm` | `Partial<StormConfig>` | Per-channel storm config override. Merged with global config. |
+---
 
 ### `EmitOptions`
 
@@ -388,13 +613,18 @@ bus.destroy()
 |---|---|---|---|
 | `from` | `string` | `'anonymous'` | Sender identity |
 | `coordinationChain` | `string[]` | `[]` | Upstream chain for loop detection |
+| `signal` | `AbortSignal` | — | Abort delivery before or during fan-out |
+
+---
 
 ### `SettledResult`
 
 | Field | Type | Description |
 |---|---|---|
-| `status` | `'fulfilled' \| 'rejected'` | Outcome of the async subscriber |
+| `status` | `'fulfilled' \| 'rejected'` | Outcome of the handler |
 | `reason` | `unknown` | Rejection reason, present only when `status` is `'rejected'` |
+
+---
 
 ### `LoggerOptions`
 
@@ -404,6 +634,25 @@ bus.destroy()
 | `filter.namespaces` | `string[]` | — | Only log messages from these namespaces |
 | `filter.channels` | `string[]` | — | Only log messages from these channel names |
 | `filter.actions` | `string[]` | — | Only log messages matching these action names |
+| `filter.exclude.namespaces` | `string[]` | — | Block messages from these namespaces |
+| `filter.exclude.channels` | `string[]` | — | Block messages from these channel names |
+| `filter.exclude.actions` | `string[]` | — | Block messages matching these action names |
+| `filter.predicate` | `(action, payload, meta) => boolean` | — | Custom filter function |
+
+---
+
+### `combineSignals`
+
+Combines any number of `AbortSignal` values (or `undefined`) into a single signal that aborts as soon as any source aborts.
+
+```ts
+import { combineSignals } from '@mikrostack/chbus'
+
+const combined = combineSignals(signalA, signalB, undefined)
+// combined aborts when either signalA or signalB aborts
+```
+
+Accepts `undefined` for any argument — missing sources are ignored. Used internally by the Mailbox to combine the interrupt signal with the emitter signal before invoking a handler.
 
 ---
 
@@ -413,9 +662,18 @@ The library is written in strict TypeScript and ships with full `.d.ts` declarat
 
 ```ts
 // Payload is inferred as { trackId: string }
-playback.on('playback:start', (payload) => {
+playback.on('playback:start', async (payload) => {
   payload.trackId  // ✓ string
-  payload.unknown   // ✗ TypeScript error
+  payload.unknown  // ✗ TypeScript error
+})
+```
+
+Mailbox types are also fully inferred from the channels passed to `createMailbox` — action names and payload shapes are constrained to the correct contract per channel key.
+
+```ts
+// Both the action name and the handler payload are typed from PlaybackContract
+mailbox.on('videoControl', 'seek', async ({ position }) => {
+  // position: number  ✓
 })
 ```
 

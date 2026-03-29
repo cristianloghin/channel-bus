@@ -7,6 +7,8 @@ import type {
 } from './types'
 import { Channel } from './channel'
 import { DebugChannel } from './debug'
+import { Mailbox } from './mailbox'
+import type { ChannelRulesMap } from './mailbox'
 
 const DEFAULT_STORM_CONFIG: StormConfig = {
   maxMessages: 100,
@@ -88,6 +90,16 @@ export class Bus {
   // Only available on the root Bus — NamespacedBus does not expose this.
   onDebug(subscriber: (msg: DebugMessage) => void): () => void {
     return this.debugChannel.subscribe(subscriber)
+  }
+
+  // Creates a Mailbox that subscribes to one or more channels on behalf of its
+  // owner, serialises message execution per-channel, and applies interrupt rules.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  createMailbox<Channels extends Record<string, Channel<any>>>(
+    channels: Channels,
+    rules?: ChannelRulesMap<Channels>,
+  ): Mailbox<Channels> {
+    return new Mailbox(channels, rules)
   }
 
   // Destroys all channels and clears internal state.

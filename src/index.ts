@@ -2,6 +2,8 @@ export { Bus, NamespacedBus, createBus } from './bus'
 export { Channel } from './channel'
 export { createLogger } from './logger'
 export { combineSignals } from './signals'
+export { Mailbox } from './mailbox'
+export type { MailboxRules, MailboxRuleClause } from './mailbox'
 export type {
   ChannelContract,
   Message,
