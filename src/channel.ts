@@ -13,7 +13,6 @@ import type {
   StormConfig,
 } from "./types";
 
-
 export class Channel<C extends ChannelContract> {
   readonly name: string; // unqualified channel name
   readonly namespace: string; // '' if created directly on the root Bus
@@ -123,7 +122,7 @@ export class Channel<C extends ChannelContract> {
   ): Message<C, A> | null {
     const from = options?.from ?? "anonymous";
     const incomingChain = options?.coordinationChain ?? [];
-    const id = crypto.randomUUID();
+    const id = uuidv4();
 
     // Storm check — drop if sender is flooding this channel.
     if (!this.stormGuard.check(from)) return null;
@@ -138,7 +137,7 @@ export class Channel<C extends ChannelContract> {
 
     // Generate a coordination ID for this emission, track it, and append it
     // to the outgoing chain so downstream channels can detect the loop.
-    const coordinationId = crypto.randomUUID();
+    const coordinationId = uuidv4();
     this.loopGuard.track(coordinationId, String(action));
     const coordinationChain = [...incomingChain, coordinationId];
 
@@ -235,4 +234,22 @@ export class Channel<C extends ChannelContract> {
       }
     };
   }
+}
+
+// ─── UUID v4 ──────────────────────────────────────────────────────────────────
+
+function uuidv4(): string {
+  // Use crypto.randomUUID if available (Node 19+, modern browsers)
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+  // Fallback: RFC 4122 v4
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
