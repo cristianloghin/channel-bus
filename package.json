@@ -1,6 +1,6 @@
 {
   "name": "@mikrostack/chbus",
-  "version": "0.3.6",
+  "version": "0.1.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/cristianloghin/channel-bus"
