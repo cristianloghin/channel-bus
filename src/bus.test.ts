@@ -121,6 +121,79 @@ describe('Bus', () => {
     bus.destroy()
   })
 
+  describe('config conflict on existing channels', () => {
+    it('optionless access to an existing channel succeeds', () => {
+      const bus = createBus()
+      const ch1 = bus.channel<UIContract>('ui', { storm: { maxMessages: 1000 } })
+      const ch2 = bus.channel<UIContract>('ui')
+      expect(ch2).toBe(ch1)
+      bus.destroy()
+    })
+
+    it('re-access with options resolving to the same config succeeds', () => {
+      const bus = createBus()
+      const ch1 = bus.channel<UIContract>('ui', { storm: { maxMessages: 1000 } })
+      const ch2 = bus.channel<UIContract>('ui', { storm: { maxMessages: 1000 } })
+      expect(ch2).toBe(ch1)
+      bus.destroy()
+    })
+
+    it('partial options resolving to the bus default succeed', () => {
+      const bus = createBus()
+      const ch1 = bus.channel<UIContract>('ui')
+      // Bus default is maxMessages: 100 — this resolves to the existing config.
+      const ch2 = bus.channel<UIContract>('ui', { storm: { maxMessages: 100 } })
+      expect(ch2).toBe(ch1)
+      bus.destroy()
+    })
+
+    it('access with a conflicting maxMessages throws', () => {
+      const bus = createBus()
+      bus.channel<UIContract>('ui')
+      expect(() =>
+        bus.channel<UIContract>('ui', { storm: { maxMessages: 1000 } }),
+      ).toThrow(/already exists with storm config/)
+      bus.destroy()
+    })
+
+    it('access with a conflicting windowMs throws', () => {
+      const bus = createBus()
+      bus.channel<UIContract>('ui', { storm: { windowMs: 500 } })
+      expect(() =>
+        bus.channel<UIContract>('ui', { storm: { windowMs: 2000 } }),
+      ).toThrow(/already exists with storm config/)
+      bus.destroy()
+    })
+
+    it('the error message includes both configs', () => {
+      const bus = createBus()
+      bus.channel<UIContract>('ui')
+      expect(() =>
+        bus.channel<UIContract>('ui', { storm: { maxMessages: 1000 } }),
+      ).toThrow(/"maxMessages":100.*"maxMessages":1000/)
+      bus.destroy()
+    })
+
+    it('namespaced channels throw on conflicting config too', () => {
+      const bus = createBus()
+      const ns = bus.namespace('vms')
+      ns.channel<UIContract>('ui')
+      expect(() =>
+        ns.channel<UIContract>('ui', { storm: { maxMessages: 1000 } }),
+      ).toThrow(/channel "vms:ui" already exists/)
+      bus.destroy()
+    })
+
+    it('respects a non-default bus-level storm config when comparing', () => {
+      const bus = createBus({ storm: { maxMessages: 1000 } })
+      bus.channel<UIContract>('ui')
+      // Resolves to { maxMessages: 1000, windowMs: 1000 } — same as existing.
+      const ch = bus.channel<UIContract>('ui', { storm: { maxMessages: 1000 } })
+      expect(ch).toBeDefined()
+      bus.destroy()
+    })
+  })
+
   it('root Bus channel and namespaced channel with same name are independent', () => {
     const bus = createBus()
     const ns = bus.namespace('vms')

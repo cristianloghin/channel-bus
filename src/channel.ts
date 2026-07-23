@@ -16,6 +16,7 @@ import type {
 export class Channel<C extends ChannelContract> {
   readonly name: string; // unqualified channel name
   readonly namespace: string; // '' if created directly on the root Bus
+  readonly stormConfig: StormConfig; // resolved config this channel was created with
 
   private middlewares: Middleware<C>[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -36,6 +37,7 @@ export class Channel<C extends ChannelContract> {
   ) {
     this.name = name;
     this.namespace = namespace;
+    this.stormConfig = stormConfig;
     // Pass the qualified name so storm warnings include full context.
     const qualifiedName = namespace ? `${namespace}:${name}` : name;
     this.stormGuard = new StormGuard(qualifiedName, stormConfig);
