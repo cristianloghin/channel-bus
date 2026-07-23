@@ -15,6 +15,10 @@ const DEFAULT_STORM_CONFIG: StormConfig = {
   windowMs: 1000,
 }
 
+function stormConfigEquals(a: StormConfig, b: StormConfig): boolean {
+  return a.maxMessages === b.maxMessages && a.windowMs === b.windowMs
+}
+
 // ── NamespacedBus ─────────────────────────────────────────────────────────────
 //
 // A thin proxy over the root Bus that scopes all channel creation to a single
@@ -118,18 +122,31 @@ export class Bus {
   ): Channel<C> {
     const key = namespace ? `${namespace}:${name}` : name
 
-    if (this.channels.has(key)) {
-      return this.channels.get(key) as Channel<C>
-    }
-
-    const stormConfig: StormConfig = options?.storm
+    const resolved: StormConfig = options?.storm
       ? { ...this.stormConfig, ...options.storm }
       : this.stormConfig
+
+    const existing = this.channels.get(key)
+    if (existing) {
+      // Options are applied by whichever party creates the channel first.
+      // An optionless call is pure access and always succeeds; a call whose
+      // options resolve to a different config than the live channel's would
+      // otherwise be silently ignored — make that loud instead.
+      if (options?.storm && !stormConfigEquals(existing.stormConfig, resolved)) {
+        throw new Error(
+          `[chbus] channel "${key}" already exists with storm config ` +
+            `${JSON.stringify(existing.stormConfig)}, but this access requested ` +
+            `${JSON.stringify(resolved)}. Options are applied by whichever party ` +
+            `creates the channel first — pass no options to access the channel as-is.`,
+        )
+      }
+      return existing as Channel<C>
+    }
 
     const ch = new Channel<C>(
       name,
       namespace,
-      stormConfig,
+      resolved,
       (msg: DebugMessage) => this.debugChannel.forward(msg),
     )
 
