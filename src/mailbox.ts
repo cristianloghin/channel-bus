@@ -1,6 +1,6 @@
 import { Channel } from "./channel";
-import type { ChannelContract, Handler, Message } from "./types";
 import { combineSignals, INERT_SIGNAL } from "./signals";
+import type { ChannelContract, Handler, Message } from "./types";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -74,7 +74,11 @@ class ChannelContext {
 
     const unsub = this.channel.on(
       action as keyof ChannelContract,
-      async (payload: unknown, meta: { message: Message<ChannelContract> }, emitterSignal: AbortSignal) => {
+      async (
+        payload: unknown,
+        meta: { message: Message<ChannelContract> },
+        emitterSignal: AbortSignal,
+      ) => {
         this.arrive({
           action,
           payload,
@@ -110,7 +114,9 @@ class ChannelContext {
     const clauses = this.rules?.[item.action];
 
     if (clauses && this.current) {
-      const clause = clauses.find((r) => String(r.interrupts) === this.current!.action);
+      const clause = clauses.find(
+        (r) => String(r.interrupts) === this.current!.action,
+      );
       if (clause) {
         switch (clause.mode) {
           case "drop-new":
@@ -181,7 +187,7 @@ export class Mailbox<
   private contexts = new Map<string, ChannelContext>();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  constructor(channels: Channels, rules?: ChannelRulesMap<any>) {
+  constructor(channels: Channels, rules?: ChannelRulesMap<Channels>) {
     for (const key of Object.keys(channels)) {
       this.contexts.set(
         key,
