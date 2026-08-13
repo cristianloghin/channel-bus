@@ -1,4 +1,4 @@
-import { Channel } from "./channel";
+import { Channel, claimAction, openActions, releaseClaims } from "./channel";
 import { combineSignals, INERT_SIGNAL } from "./signals";
 import type { ChannelContract, Handler, Message } from "./types";
 
@@ -54,6 +54,7 @@ class ChannelContext {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private handlers = new Map<string, Handler<ChannelContract, any>>();
   private unsubs: Array<() => void> = [];
+  private opened = false;
 
   constructor(
     private readonly channel: Channel<ChannelContract>,
@@ -65,11 +66,18 @@ class ChannelContext {
   // Throws if a handler is already registered for the same action.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   register(action: string, handler: Handler<ChannelContract, any>): void {
+    if (this.opened) {
+      throw new Error(
+        `[chbus] Cannot register "${action}" after open() — the handler set was declared complete`,
+      );
+    }
     if (this.handlers.has(action)) {
       throw new Error(
         `[chbus] Mailbox already has a handler for action "${action}"`,
       );
     }
+    this.channel[claimAction](action, this);
+
     this.handlers.set(action, handler);
 
     const unsub = this.channel.on(
@@ -92,9 +100,16 @@ class ChannelContext {
     this.unsubs.push(unsub);
   }
 
+  open(): void {
+    this.opened = true;
+    this.channel[openActions](this);
+  }
+
   // Unsubscribe from all channel subscriptions, abort any in-flight handler,
   // and clear all state.
   destroy(): void {
+    this.channel[releaseClaims](this);
+
     this.unsubs.forEach((u) => u());
     this.unsubs.length = 0;
     if (this.current) {
@@ -185,6 +200,7 @@ export class Mailbox<
   Channels extends Record<string, Channel<any>>,
 > {
   private contexts = new Map<string, ChannelContext>();
+  private opened = false;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   constructor(channels: Channels, rules?: ChannelRulesMap<Channels>) {
@@ -218,6 +234,17 @@ export class Mailbox<
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     context.register(action, handler as Handler<ChannelContract, any>);
+  }
+
+  // Declares the handler set complete. On buffered channels this drains each
+  // channel's claimed backlog, in emit order, through the normal queue and
+  // interrupt rules. Calling open() twice, or registering after it, throws.
+  open(): void {
+    if (this.opened) {
+      throw new Error("[chbus] Mailbox is already open");
+    }
+    this.opened = true;
+    this.contexts.forEach((ctx) => ctx.open());
   }
 
   // Unsubscribe all channel subscriptions and abort any in-flight handlers.

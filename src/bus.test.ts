@@ -166,6 +166,28 @@ describe("Bus", () => {
       bus.destroy();
     });
 
+    it("a recreated namespace does not resurrect buffered messages", async () => {
+      const bus = createBus();
+      const ns = bus.namespace("vms");
+      const ch = ns.channel<PlaybackContract>("commands", { buffer: true });
+      void ch.emit("playback:started", { cameraId: "cam-1" }); // buffered — no handler yet
+
+      ns.destroy();
+
+      const recreated = bus
+        .namespace("vms")
+        .channel<PlaybackContract>("commands", { buffer: true });
+      const mailbox = bus.createMailbox({ commands: recreated });
+      const cb = vi.fn().mockResolvedValue(undefined);
+      mailbox.on("commands", "playback:started", cb);
+      mailbox.open();
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(cb).not.toHaveBeenCalled();
+      mailbox.destroy();
+      bus.destroy();
+    });
+
     it("destroy() is idempotent", () => {
       const bus = createBus();
       const ns = bus.namespace("vms");
