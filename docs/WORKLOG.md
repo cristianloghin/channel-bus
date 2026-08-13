@@ -6,7 +6,27 @@ recorded here as it lands, the live backlog is below. Newest work is appended.
 
 ## Outstanding
 
-(empty)
+- **Buffer-until-open for command channels** — see
+  [buffer-until-open.md](./buffer-until-open.md) (formerly `replay.md`).
+  Raised by the `vms-video-player` integration, where the React hooks create
+  channels a macrotask before the core that handles commands exists, so
+  everything emitted in that window is dropped and the consumer carries a
+  104-line reconciler to work around it. Reframed 2026-08-13: the startup
+  window is a first-subscriber gap — undelivered mail, not history to rewind —
+  so the note now proposes deferred delivery rather than replay, which stays
+  in the doc as the rejected framing (per-action opt-in fragments the log;
+  broadcast replay re-executes side effects). A design discussion the same
+  day settled the shape: the channel owns the buffer (it is the only party
+  alive at emit time), only mailboxes can trigger a drain (`channel.on` stays
+  dumb), and each mailbox drains just the actions it registered — sound
+  because ordering was only ever guaranteed per mailbox, and it lets late
+  subsystems each collect their own backlog without coordinating. Drained
+  messages flow through the normal mailbox queue, so interrupt rules coalesce
+  stale contradictory commands for free. Not implemented; still open are
+  bounds, the channel↔mailbox handshake, and drained-message metadata.
+  Adoption requires `vms-video-player` to move command handling from plain
+  `channel.on` into a mailbox first — argued in the doc to be correct on its
+  own merits.
 
 ## Completed
 
