@@ -120,6 +120,102 @@ describe("MessageBuffer", () => {
     });
   });
 
+  describe("claims and drain", () => {
+    const mailboxA = {};
+    const mailboxB = {};
+
+    it("a first claim succeeds", () => {
+      const buffer = makeBuffer();
+      expect(() => buffer.claim("a", mailboxA)).not.toThrow();
+    });
+
+    it("claiming an action held by another mailbox throws", () => {
+      const buffer = makeBuffer();
+      buffer.claim("a", mailboxA);
+      expect(() => buffer.claim("a", mailboxB)).toThrow(
+        /already claimed by another mailbox/,
+      );
+    });
+
+    it("re-claiming by the same claimant is a no-op", () => {
+      const buffer = makeBuffer();
+      buffer.claim("a", mailboxA);
+      expect(() => buffer.claim("a", mailboxA)).not.toThrow();
+    });
+
+    it("open() returns only the claimant's actions, in emit order", () => {
+      const buffer = makeBuffer();
+      const a1 = msg("a");
+      const b1 = msg("b");
+      const a2 = msg("a");
+      buffer.push(a1);
+      buffer.push(b1);
+      buffer.push(a2);
+      buffer.claim("a", mailboxA);
+
+      const drained = buffer.open(mailboxA);
+
+      expect(drained.map((m) => m.id)).toEqual([a1.id, a2.id]);
+      expect(buffer.size).toBe(1); // b1 stays
+    });
+
+    it("open() marks the claimed actions open, others stay closed", () => {
+      const buffer = makeBuffer();
+      buffer.claim("a", mailboxA);
+      buffer.open(mailboxA);
+      expect(buffer.isOpen("a")).toBe(true);
+      expect(buffer.isOpen("b")).toBe(false);
+    });
+
+    it("open() with nothing buffered returns []", () => {
+      const buffer = makeBuffer();
+      buffer.claim("a", mailboxA);
+      expect(buffer.open(mailboxA)).toEqual([]);
+    });
+
+    it("a second open() by the same claimant returns []", () => {
+      const buffer = makeBuffer();
+      buffer.push(msg("a"));
+      buffer.claim("a", mailboxA);
+      buffer.open(mailboxA);
+      expect(buffer.open(mailboxA)).toEqual([]);
+    });
+
+    it("open() evicts expired messages before draining", () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const buffer = makeBuffer();
+      buffer.push(msg("a", Date.now() - 20_000));
+      const fresh = msg("a");
+      buffer.push(fresh);
+      buffer.claim("a", mailboxA);
+
+      const drained = buffer.open(mailboxA);
+      expect(drained.map((m) => m.id)).toEqual([fresh.id]);
+    });
+
+    it("release() frees unopened claims", () => {
+      const buffer = makeBuffer();
+      buffer.claim("a", mailboxA);
+      buffer.release(mailboxA);
+      expect(() => buffer.claim("a", mailboxB)).not.toThrow();
+    });
+
+    it("release() keeps opened claims held", () => {
+      const buffer = makeBuffer();
+      buffer.claim("a", mailboxA);
+      buffer.open(mailboxA);
+      buffer.release(mailboxA);
+      expect(() => buffer.claim("a", mailboxB)).toThrow(/already claimed/);
+    });
+
+    it("destroy() clears claims", () => {
+      const buffer = makeBuffer();
+      buffer.claim("a", mailboxA);
+      buffer.destroy();
+      expect(() => buffer.claim("a", mailboxB)).not.toThrow();
+    });
+  });
+
   it("destroy() clears the queue", () => {
     const buffer = makeBuffer();
     buffer.push(msg("a"));

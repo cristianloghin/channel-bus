@@ -15,6 +15,10 @@ import type {
   StormConfig,
 } from "./types";
 
+export const claimAction = Symbol("chbus.claimAction");
+export const openActions = Symbol("chbus.openActions");
+export const releaseClaims = Symbol("chbus.releaseClaims");
+
 export class Channel<C extends ChannelContract> {
   readonly name: string; // unqualified channel name
   readonly namespace: string; // '' if created directly on the root Bus
@@ -51,6 +55,28 @@ export class Channel<C extends ChannelContract> {
       : null;
     this.stormGuard = new StormGuard(qualifiedName, stormConfig);
     this.onEmit = onEmit;
+  }
+
+  // ── Buffer ──────────────────────────────────────────────────────────────────
+
+  [claimAction](action: keyof C, claimant: object): void {
+    this.buffer?.claim(action, claimant);
+  }
+
+  [releaseClaims](claimant: object): void {
+    this.buffer?.release(claimant);
+  }
+
+  [openActions](claimant: object): void {
+    if (this.destroyed || !this.buffer) return;
+    for (const message of this.buffer.open(claimant)) {
+      void this.deliver(
+        message.action,
+        message.payload,
+        { ...message, deferred: true },
+        INERT_SIGNAL,
+      );
+    }
   }
 
   // ── Middleware ──────────────────────────────────────────────────────────────

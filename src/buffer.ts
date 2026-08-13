@@ -3,6 +3,7 @@ import type { BufferConfig, ChannelContract, Message } from "./types";
 export class MessageBuffer<C extends ChannelContract> {
   private queue: Message<C>[] = [];
   private openActions = new Set<keyof C>();
+  private claims = new Map<keyof C, object>();
 
   constructor(
     private readonly channelName: string, // qualified, for warnings
@@ -25,6 +26,46 @@ export class MessageBuffer<C extends ChannelContract> {
     }
   }
 
+  claim(action: keyof C, claimant: object): void {
+    const existing = this.claims.get(action);
+    if (existing !== undefined && existing !== claimant) {
+      throw new Error(
+        `[chbus] Action "${String(action)}" on channel "${this.channelName}" is already claimed by another mailbox`,
+      );
+    }
+    this.claims.set(action, claimant);
+  }
+
+  open(claimant: object): Message<C>[] {
+    this.evictExpired();
+    const actionSet = new Set<keyof C>();
+    this.claims.forEach((c, a) => {
+      if (c === claimant) {
+        actionSet.add(a);
+      }
+    });
+    actionSet.forEach((a) => {
+      this.openActions.add(a);
+    });
+    const claimedMessages = this.queue.filter((m) => actionSet.has(m.action));
+    const unclaimedMessages = this.queue.filter(
+      (m) => !actionSet.has(m.action),
+    );
+
+    this.queue = unclaimedMessages;
+    return claimedMessages;
+  }
+
+  release(claimant: object): void {
+    const unopenedActions = new Set<keyof C>();
+    this.claims.forEach((c, a) => {
+      if (c === claimant && !this.openActions.has(a)) {
+        unopenedActions.add(a);
+      }
+    });
+    unopenedActions.forEach((a) => this.claims.delete(a));
+  }
+
   private evictExpired(): void {
     const cutoff = Date.now() - this.config.maxAgeMs;
 
@@ -44,5 +85,6 @@ export class MessageBuffer<C extends ChannelContract> {
   destroy(): void {
     this.queue = [];
     this.openActions.clear();
+    this.claims.clear();
   }
 }
