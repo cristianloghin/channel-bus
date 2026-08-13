@@ -15,6 +15,7 @@ export interface Message<
   from: string; // sender ID
   coordinationChain: string[]; // for loop detection
   timestamp: number; // Date.now()
+  deferred?: true; // present only on deliveries drained from a channel buffer
 }
 
 // A flattened copy of every message forwarded to the debug wiretap.
@@ -50,6 +51,11 @@ export interface SettledResult {
   reason?: unknown; // present if status is 'rejected'
 }
 
+export interface BufferConfig {
+  maxMessages: number; // default: 100
+  maxAgeMs: number; // default: 10_000
+}
+
 export interface StormConfig {
   maxMessages: number; // default: 100
   windowMs: number; // default: 1000
@@ -61,6 +67,7 @@ export interface BusConfig {
 
 // Optional per-channel overrides passed as the second argument to channel().
 export interface ChannelOptions {
+  buffer?: true | Partial<BufferConfig>;
   storm?: Partial<StormConfig>;
 }
 

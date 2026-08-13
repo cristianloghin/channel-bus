@@ -2,6 +2,7 @@ import { LoopGuard } from "./loop";
 import { INERT_SIGNAL } from "./signals";
 import { StormGuard } from "./storm";
 import type {
+  BufferConfig,
   ChannelContract,
   DebugMessage,
   EmitOptions,
@@ -16,6 +17,7 @@ import type {
 export class Channel<C extends ChannelContract> {
   readonly name: string; // unqualified channel name
   readonly namespace: string; // '' if created directly on the root Bus
+  readonly bufferConfig: BufferConfig | null;
   readonly stormConfig: StormConfig; // resolved config this channel was created with
 
   private middlewares: Middleware<C>[] = [];
@@ -32,11 +34,13 @@ export class Channel<C extends ChannelContract> {
   constructor(
     name: string,
     namespace: string,
+    bufferConfig: BufferConfig | null,
     stormConfig: StormConfig,
     onEmit: (msg: DebugMessage) => void,
   ) {
     this.name = name;
     this.namespace = namespace;
+    this.bufferConfig = bufferConfig;
     this.stormConfig = stormConfig;
     // Pass the qualified name so storm warnings include full context.
     const qualifiedName = namespace ? `${namespace}:${name}` : name;

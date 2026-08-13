@@ -20,7 +20,7 @@ const noop = () => {};
 function makeChannel<C extends Record<string, unknown>>(
   name = "ch",
 ): Channel<C> {
-  return new Channel<C>(name, "", STORM, noop);
+  return new Channel<C>(name, "", null, STORM, noop);
 }
 
 // Creates a deferred promise — resolve() to unblock an awaiting handler.

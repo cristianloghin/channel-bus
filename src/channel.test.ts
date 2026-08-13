@@ -11,7 +11,7 @@ const STORM_CONFIG = { maxMessages: 100, windowMs: 1000 };
 const noop = () => {};
 
 function makeChannel(onEmit = noop as (msg: DebugMessage) => void) {
-  return new Channel<TestContract>("test", "", STORM_CONFIG, onEmit);
+  return new Channel<TestContract>("test", "", null, STORM_CONFIG, onEmit);
 }
 
 describe("Channel — delivery", () => {
@@ -209,6 +209,7 @@ describe("Channel — guards", () => {
     const ch = new Channel<TestContract>(
       "test",
       "",
+      null,
       { maxMessages: 2, windowMs: 1000 },
       noop,
     );
@@ -297,7 +298,7 @@ describe("Channel — lifecycle", () => {
 describe("Channel — debug wiretap", () => {
   it("emit() forwards to the debug wiretap", async () => {
     const onEmit = vi.fn();
-    const ch = new Channel<TestContract>("test", "", STORM_CONFIG, onEmit);
+    const ch = new Channel<TestContract>("test", "", null, STORM_CONFIG, onEmit);
     ch.on("test:ping", async () => {});
     await ch.emit("test:ping", { value: 1 });
     expect(onEmit).toHaveBeenCalledTimes(1);
@@ -305,7 +306,7 @@ describe("Channel — debug wiretap", () => {
 
   it("debug message includes correct namespace and qualifiedChannel", async () => {
     const onEmit = vi.fn();
-    const ch = new Channel<TestContract>("playback", "vms", STORM_CONFIG, onEmit);
+    const ch = new Channel<TestContract>("playback", "vms", null, STORM_CONFIG, onEmit);
     ch.on("test:ping", async () => {});
     await ch.emit("test:ping", { value: 1 });
 
@@ -317,7 +318,7 @@ describe("Channel — debug wiretap", () => {
 
   it("debug message has empty namespace and unqualified qualifiedChannel when no namespace", async () => {
     const onEmit = vi.fn();
-    const ch = new Channel<TestContract>("events", "", STORM_CONFIG, onEmit);
+    const ch = new Channel<TestContract>("events", "", null, STORM_CONFIG, onEmit);
     ch.on("test:ping", async () => {});
     await ch.emit("test:ping", { value: 1 });
 

@@ -278,6 +278,94 @@ describe("Bus", () => {
       expect(ch).toBeDefined();
       bus.destroy();
     });
+
+    it("optionless access to an existing buffered channel succeeds", () => {
+      const bus = createBus();
+      const ch1 = bus.channel<UIContract>("ui", { buffer: true });
+      const ch2 = bus.channel<UIContract>("ui");
+      expect(ch2).toBe(ch1);
+      bus.destroy();
+    });
+
+    it("re-access with buffer: true on a buffered channel succeeds", () => {
+      const bus = createBus();
+      const ch1 = bus.channel<UIContract>("ui", { buffer: true });
+      const ch2 = bus.channel<UIContract>("ui", { buffer: true });
+      expect(ch2).toBe(ch1);
+      bus.destroy();
+    });
+
+    it("buffer options resolving to the defaults succeed against buffer: true", () => {
+      const bus = createBus();
+      const ch1 = bus.channel<UIContract>("ui", { buffer: true });
+      const ch2 = bus.channel<UIContract>("ui", {
+        buffer: { maxMessages: 100, maxAgeMs: 10_000 },
+      });
+      expect(ch2).toBe(ch1);
+      bus.destroy();
+    });
+
+    it("access requesting buffering on an unbuffered channel throws", () => {
+      const bus = createBus();
+      bus.channel<UIContract>("ui");
+      expect(() => bus.channel<UIContract>("ui", { buffer: true })).toThrow(
+        /already exists with buffer config/,
+      );
+      bus.destroy();
+    });
+
+    it("access with conflicting buffer bounds throws", () => {
+      const bus = createBus();
+      bus.channel<UIContract>("ui", { buffer: { maxMessages: 5 } });
+      expect(() =>
+        bus.channel<UIContract>("ui", { buffer: { maxMessages: 10 } }),
+      ).toThrow(/already exists with buffer config/);
+      bus.destroy();
+    });
+
+    it("the buffer error message includes both configs", () => {
+      const bus = createBus();
+      bus.channel<UIContract>("ui");
+      expect(() => bus.channel<UIContract>("ui", { buffer: true })).toThrow(
+        /null.*"maxMessages":100/,
+      );
+      bus.destroy();
+    });
+
+    it("namespaced channels throw on conflicting buffer config too", () => {
+      const bus = createBus();
+      const ns = bus.namespace("vms");
+      ns.channel<UIContract>("ui");
+      expect(() => ns.channel<UIContract>("ui", { buffer: true })).toThrow(
+        /channel "vms:ui" already exists/,
+      );
+      bus.destroy();
+    });
+  });
+
+  describe("buffer option resolution", () => {
+    it("buffer: true resolves to the default bounds", () => {
+      const bus = createBus();
+      const ch = bus.channel<UIContract>("ui", { buffer: true });
+      expect(ch.bufferConfig).toEqual({ maxMessages: 100, maxAgeMs: 10_000 });
+      bus.destroy();
+    });
+
+    it("partial buffer options merge over the defaults", () => {
+      const bus = createBus();
+      const ch = bus.channel<UIContract>("ui", {
+        buffer: { maxMessages: 5 },
+      });
+      expect(ch.bufferConfig).toEqual({ maxMessages: 5, maxAgeMs: 10_000 });
+      bus.destroy();
+    });
+
+    it("a channel created without the buffer option is unbuffered", () => {
+      const bus = createBus();
+      const ch = bus.channel<UIContract>("ui");
+      expect(ch.bufferConfig).toBeNull();
+      bus.destroy();
+    });
   });
 
   it("root Bus channel and namespaced channel with same name are independent", () => {
