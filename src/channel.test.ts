@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Channel } from "./channel";
+import { Channel, claimAction, openActions, releaseClaims } from "./channel";
 import type { DebugMessage } from "./types";
 
 type TestContract = {
@@ -11,7 +11,7 @@ const STORM_CONFIG = { maxMessages: 100, windowMs: 1000 };
 const noop = () => {};
 
 function makeChannel(onEmit = noop as (msg: DebugMessage) => void) {
-  return new Channel<TestContract>("test", "", STORM_CONFIG, onEmit);
+  return new Channel<TestContract>("test", "", null, STORM_CONFIG, onEmit);
 }
 
 describe("Channel — delivery", () => {
@@ -209,6 +209,7 @@ describe("Channel — guards", () => {
     const ch = new Channel<TestContract>(
       "test",
       "",
+      null,
       { maxMessages: 2, windowMs: 1000 },
       noop,
     );
@@ -297,7 +298,7 @@ describe("Channel — lifecycle", () => {
 describe("Channel — debug wiretap", () => {
   it("emit() forwards to the debug wiretap", async () => {
     const onEmit = vi.fn();
-    const ch = new Channel<TestContract>("test", "", STORM_CONFIG, onEmit);
+    const ch = new Channel<TestContract>("test", "", null, STORM_CONFIG, onEmit);
     ch.on("test:ping", async () => {});
     await ch.emit("test:ping", { value: 1 });
     expect(onEmit).toHaveBeenCalledTimes(1);
@@ -305,7 +306,7 @@ describe("Channel — debug wiretap", () => {
 
   it("debug message includes correct namespace and qualifiedChannel", async () => {
     const onEmit = vi.fn();
-    const ch = new Channel<TestContract>("playback", "vms", STORM_CONFIG, onEmit);
+    const ch = new Channel<TestContract>("playback", "vms", null, STORM_CONFIG, onEmit);
     ch.on("test:ping", async () => {});
     await ch.emit("test:ping", { value: 1 });
 
@@ -317,12 +318,265 @@ describe("Channel — debug wiretap", () => {
 
   it("debug message has empty namespace and unqualified qualifiedChannel when no namespace", async () => {
     const onEmit = vi.fn();
-    const ch = new Channel<TestContract>("events", "", STORM_CONFIG, onEmit);
+    const ch = new Channel<TestContract>("events", "", null, STORM_CONFIG, onEmit);
     ch.on("test:ping", async () => {});
     await ch.emit("test:ping", { value: 1 });
 
     const msg: DebugMessage = onEmit.mock.calls[0][0];
     expect(msg.namespace).toBe("");
     expect(msg.qualifiedChannel).toBe("events");
+  });
+});
+
+describe("Channel — buffering", () => {
+  const BUFFER_CONFIG = { maxMessages: 100, maxAgeMs: 10_000 };
+
+  function makeBufferedChannel(onEmit = noop as (msg: DebugMessage) => void) {
+    return new Channel<TestContract>(
+      "test",
+      "",
+      BUFFER_CONFIG,
+      STORM_CONFIG,
+      onEmit,
+    );
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("a closed action's emit resolves [] and does not call a subscribed handler", async () => {
+    const ch = makeBufferedChannel();
+    const cb = vi.fn().mockResolvedValue(undefined);
+    ch.on("test:ping", cb);
+
+    const results = await ch.emit("test:ping", { value: 1 });
+
+    expect(results).toEqual([]);
+    expect(cb).not.toHaveBeenCalled();
+  });
+
+  it("buffers even with no subscribers at all (no warning, no throw)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ch = makeBufferedChannel();
+    const results = await ch.emit("test:ping", { value: 1 });
+    expect(results).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("buffered emits still reach the debug wiretap", async () => {
+    const onEmit = vi.fn();
+    const ch = makeBufferedChannel(onEmit);
+    await ch.emit("test:ping", { value: 1 });
+    expect(onEmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("a message dropped by middleware never reaches the buffer", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ch = new Channel<TestContract>(
+      "test",
+      "",
+      { maxMessages: 1, maxAgeMs: 10_000 },
+      STORM_CONFIG,
+      noop,
+    );
+    await ch.emit("test:ping", { value: 1 }); // fills the one-slot buffer
+
+    ch.use(() => {}); // swallows every subsequent emit — never calls next()
+    await ch.emit("test:ping", { value: 2 });
+
+    // Had the dropped message reached the buffer, the one-slot bound would
+    // have evicted the first message with an overflow warning.
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("unbuffered channels deliver immediately (regression)", async () => {
+    const ch = makeChannel();
+    const cb = vi.fn().mockResolvedValue(undefined);
+    ch.on("test:ping", cb);
+    await ch.emit("test:ping", { value: 1 });
+    expect(cb).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Channel — claim/open/drain", () => {
+  const BUFFER_CONFIG = { maxMessages: 100, maxAgeMs: 10_000 };
+
+  function makeBufferedChannel(onEmit = noop as (msg: DebugMessage) => void) {
+    return new Channel<TestContract>(
+      "test",
+      "",
+      BUFFER_CONFIG,
+      STORM_CONFIG,
+      onEmit,
+    );
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("drains a claimed action to subscribers in emit order, marked deferred", async () => {
+    const ch = makeBufferedChannel();
+    const mailbox = {};
+    const cb = vi.fn().mockResolvedValue(undefined);
+    ch.on("test:ping", cb);
+
+    await ch.emit("test:ping", { value: 1 });
+    await ch.emit("test:ping", { value: 2 });
+    expect(cb).not.toHaveBeenCalled();
+
+    ch[claimAction]("test:ping", mailbox);
+    ch[openActions](mailbox);
+    await Promise.resolve();
+
+    expect(cb).toHaveBeenCalledTimes(2);
+    expect(cb.mock.calls[0][0]).toEqual({ value: 1 });
+    expect(cb.mock.calls[1][0]).toEqual({ value: 2 });
+    expect(cb.mock.calls[0][1].message.deferred).toBe(true);
+    expect(cb.mock.calls[1][1].message.deferred).toBe(true);
+  });
+
+  it("preserves cross-action emit order within one claimant's drain", async () => {
+    const ch = makeBufferedChannel();
+    const mailbox = {};
+    const order: string[] = [];
+    ch.on("test:ping", async (p) => {
+      order.push(`ping:${p.value}`);
+    });
+    ch.on("test:pong", async (p) => {
+      order.push(`pong:${p.value}`);
+    });
+
+    await ch.emit("test:ping", { value: 1 });
+    await ch.emit("test:pong", { value: "x" });
+    await ch.emit("test:ping", { value: 2 });
+
+    ch[claimAction]("test:ping", mailbox);
+    ch[claimAction]("test:pong", mailbox);
+    ch[openActions](mailbox);
+    await Promise.resolve();
+
+    expect(order).toEqual(["ping:1", "pong:x", "ping:2"]);
+  });
+
+  it("drained deliveries preserve the original message identity", async () => {
+    const emitted: DebugMessage[] = [];
+    const ch = makeBufferedChannel((msg) => emitted.push(msg));
+    const mailbox = {};
+    const cb = vi.fn().mockResolvedValue(undefined);
+    ch.on("test:ping", cb);
+
+    await ch.emit("test:ping", { value: 7 }, { from: "host" });
+
+    ch[claimAction]("test:ping", mailbox);
+    ch[openActions](mailbox);
+    await Promise.resolve();
+
+    const delivered = cb.mock.calls[0][1].message;
+    expect(delivered.id).toBe(emitted[0].messageId);
+    expect(delivered.from).toBe("host");
+    expect(delivered.timestamp).toBe(emitted[0].timestamp);
+    expect(delivered.coordinationChain).toEqual(emitted[0].coordinationChain);
+  });
+
+  it("unclaimed actions stay buffered until their own claimant opens", async () => {
+    const ch = makeBufferedChannel();
+    const playback = {};
+    const seek = {};
+    const pingCb = vi.fn().mockResolvedValue(undefined);
+    const pongCb = vi.fn().mockResolvedValue(undefined);
+    ch.on("test:ping", pingCb);
+    ch.on("test:pong", pongCb);
+
+    await ch.emit("test:ping", { value: 1 });
+    await ch.emit("test:pong", { value: "x" });
+
+    ch[claimAction]("test:ping", playback);
+    ch[openActions](playback);
+    await Promise.resolve();
+
+    expect(pingCb).toHaveBeenCalledOnce();
+    expect(pongCb).not.toHaveBeenCalled();
+
+    // The second subsystem arrives later and collects its own backlog.
+    ch[claimAction]("test:pong", seek);
+    ch[openActions](seek);
+    await Promise.resolve();
+
+    expect(pongCb).toHaveBeenCalledOnce();
+  });
+
+  it("live emissions pass through once the action is open", async () => {
+    const ch = makeBufferedChannel();
+    const mailbox = {};
+    const cb = vi.fn().mockResolvedValue(undefined);
+    ch.on("test:ping", cb);
+
+    ch[claimAction]("test:ping", mailbox);
+    ch[openActions](mailbox);
+
+    const results = await ch.emit("test:ping", { value: 3 });
+
+    expect(results).toHaveLength(1);
+    expect(cb).toHaveBeenCalledOnce();
+    expect(cb.mock.calls[0][1].message.deferred).toBeUndefined();
+  });
+
+  it("the drain does not re-emit debug events", async () => {
+    const onEmit = vi.fn();
+    const ch = makeBufferedChannel(onEmit);
+    const mailbox = {};
+    ch.on("test:ping", async () => {});
+
+    await ch.emit("test:ping", { value: 1 });
+    await ch.emit("test:ping", { value: 2 });
+    expect(onEmit).toHaveBeenCalledTimes(2);
+
+    ch[claimAction]("test:ping", mailbox);
+    ch[openActions](mailbox);
+    await Promise.resolve();
+
+    expect(onEmit).toHaveBeenCalledTimes(2);
+  });
+
+  it("a claim conflict surfaces through the channel", () => {
+    const ch = makeBufferedChannel();
+    ch[claimAction]("test:ping", {});
+    expect(() => ch[claimAction]("test:ping", {})).toThrow(
+      /already claimed by another mailbox/,
+    );
+  });
+
+  it("releaseClaims frees an unopened claim", () => {
+    const ch = makeBufferedChannel();
+    const first = {};
+    ch[claimAction]("test:ping", first);
+    ch[releaseClaims](first);
+    expect(() => ch[claimAction]("test:ping", {})).not.toThrow();
+  });
+
+  it("openActions after destroy() is a no-op", async () => {
+    const ch = makeBufferedChannel();
+    const mailbox = {};
+    const cb = vi.fn().mockResolvedValue(undefined);
+    ch.on("test:ping", cb);
+    await ch.emit("test:ping", { value: 1 });
+    ch[claimAction]("test:ping", mailbox);
+
+    ch.destroy();
+    expect(() => ch[openActions](mailbox)).not.toThrow();
+    await Promise.resolve();
+    expect(cb).not.toHaveBeenCalled();
+  });
+
+  it("claim, open, and release are no-ops on unbuffered channels", () => {
+    const ch = makeChannel();
+    const mailbox = {};
+    expect(() => {
+      ch[claimAction]("test:ping", mailbox);
+      ch[openActions](mailbox);
+      ch[releaseClaims](mailbox);
+    }).not.toThrow();
   });
 });

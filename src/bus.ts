@@ -3,6 +3,7 @@ import { DebugChannel } from "./debug";
 import type { ChannelRulesMap } from "./mailbox";
 import { Mailbox } from "./mailbox";
 import type {
+  BufferConfig,
   BusConfig,
   ChannelContract,
   ChannelOptions,
@@ -15,8 +16,21 @@ const DEFAULT_STORM_CONFIG: StormConfig = {
   windowMs: 1000,
 };
 
+const DEFAULT_BUFFER_CONFIG: BufferConfig = {
+  maxMessages: 100,
+  maxAgeMs: 10_000,
+};
+
 function stormConfigEquals(a: StormConfig, b: StormConfig): boolean {
   return a.maxMessages === b.maxMessages && a.windowMs === b.windowMs;
+}
+
+function bufferConfigEquals(
+  a: BufferConfig | null,
+  b: BufferConfig | null,
+): boolean {
+  if (a === null || b === null) return a === b;
+  return a.maxMessages === b.maxMessages && a.maxAgeMs === b.maxAgeMs;
 }
 
 // ── NamespacedBus ─────────────────────────────────────────────────────────────
@@ -140,7 +154,13 @@ export class Bus {
   ): Channel<C> {
     const key = namespace ? `${namespace}:${name}` : name;
 
-    const resolved: StormConfig = options?.storm
+    const resolvedBuffer: BufferConfig | null = options?.buffer
+      ? options.buffer === true
+        ? DEFAULT_BUFFER_CONFIG
+        : { ...DEFAULT_BUFFER_CONFIG, ...options.buffer }
+      : null;
+
+    const resolvedStorm: StormConfig = options?.storm
       ? { ...this.stormConfig, ...options.storm }
       : this.stormConfig;
 
@@ -152,20 +172,37 @@ export class Bus {
       // otherwise be silently ignored — make that loud instead.
       if (
         options?.storm &&
-        !stormConfigEquals(existing.stormConfig, resolved)
+        !stormConfigEquals(existing.stormConfig, resolvedStorm)
       ) {
         throw new Error(
           `[chbus] channel "${key}" already exists with storm config ` +
             `${JSON.stringify(existing.stormConfig)}, but this access requested ` +
-            `${JSON.stringify(resolved)}. Options are applied by whichever party ` +
+            `${JSON.stringify(resolvedStorm)}. Options are applied by whichever party ` +
             `creates the channel first — pass no options to access the channel as-is.`,
         );
       }
+
+      if (
+        options?.buffer &&
+        !bufferConfigEquals(existing.bufferConfig, resolvedBuffer)
+      ) {
+        throw new Error(
+          `[chbus] channel "${key}" already exists with buffer config ` +
+            `${JSON.stringify(existing.bufferConfig)}, but this access requested ` +
+            `${JSON.stringify(resolvedBuffer)}. Options are applied by whichever party ` +
+            `creates the channel first — pass no options to access the channel as-is.`,
+        );
+      }
+
       return existing as Channel<C>;
     }
 
-    const ch = new Channel<C>(name, namespace, resolved, (msg: DebugMessage) =>
-      this.debugChannel.forward(msg),
+    const ch = new Channel<C>(
+      name,
+      namespace,
+      resolvedBuffer,
+      resolvedStorm,
+      (msg: DebugMessage) => this.debugChannel.forward(msg),
     );
 
     this.channels.set(key, ch as Channel<ChannelContract>);

@@ -1,6 +1,7 @@
 # `@mikrostack/chbus` — Implementation Spec
 
-Two staged changes. Stage 1 must be complete and green before Stage 2 begins.
+Three staged changes. Each stage must be complete and green before the next
+begins.
 
 ---
 
@@ -285,7 +286,8 @@ completion, and the next message will not dequeue until it does.
 - One handler per action per channel. Registering a second handler for the same
   action on the same channel is an error.
 - Messages arriving before a handler is registered are missed — same guarantee
-  as raw channel subscriptions.
+  as raw channel subscriptions. (Stage 3 adds buffered channels as the
+  opt-in exception.)
 - `createMailbox` lives on `Bus`, not on `Channel`.
 
 ## What the mailbox does not do
@@ -317,3 +319,93 @@ There is no heap, no priority scoring, and no continuous re-ordering. Priority
 is expressed entirely through point-in-time rule evaluation when a message
 arrives. Keep the implementation as close to this description as possible —
 the simplicity is intentional.
+
+---
+
+# Stage 3 — Buffered channels (buffer-until-open)
+
+## Goal
+
+Give command channels an escape hatch from the "be listening first"
+constraint without giving up statelessness anywhere else. Deferred delivery,
+not replay: a message is held only while it has never been delivered, is
+delivered exactly once, and is then gone. Design rationale and the rejected
+alternatives (general replay, a public channel-level `open()`) are recorded
+in [docs/buffer-until-open.md](./docs/buffer-until-open.md).
+
+## Behaviour
+
+- `ChannelOptions.buffer` opts a channel in at creation: `true` for defaults,
+  or partial `{ maxMessages, maxAgeMs }` merged over them (100 / 10 000 ms).
+  Buffered-ness and bounds are part of channel identity — a later access
+  expressing a conflicting config throws, exactly like storm config.
+- On a buffered channel every action starts **closed**. `emit()` runs the
+  storm and loop guards, middleware, and the debug forward exactly as on any
+  channel, then diverts the built message into a single per-channel buffer
+  (emit order) instead of delivering, and resolves `[]`. A middleware drop
+  never reaches the buffer. Zero subscribers is fine — buffering with nobody
+  attached is the point.
+- **Mailboxes own the drain.** `Mailbox.on()` on a buffered channel claims
+  the action for that mailbox before touching any other state; a claim held
+  by another mailbox throws at registration time. `Mailbox.open()` declares
+  the handler set complete: each claimed action is marked open and its
+  backlog delivered synchronously, in emit order, through the channel's
+  normal delivery path — drained messages enter the mailbox queue and are
+  subject to interrupt rules exactly like live traffic.
+- The gate is **per action**, not per channel. Unclaimed actions keep
+  buffering until claimed or aged out; opened actions pass live emissions
+  straight through, permanently. Two mailboxes with disjoint action sets
+  each drain their own backlog on their own `open()`.
+- Drained deliveries preserve the original `id`, `timestamp`, `from`, and
+  `coordinationChain`, and carry `deferred: true`. Middleware, the guards,
+  and the debug wiretap are not re-run — all were paid at emit time. The
+  emitter's signal is expired by drain time; the delivery carries an inert
+  signal and the mailbox combines its own as usual.
+- Plain `channel.on` subscribers cannot claim or open. Any that are attached
+  when a drain runs receive the drained messages — their first and only
+  delivery. Broadcast is preserved; replay does not exist.
+- Bounds evict lazily (on push, on drain, on size reads): oldest-first over
+  `maxMessages`, expiry over `maxAgeMs`, one `[chbus]` warning per dropped
+  message.
+
+## Lifecycle rules
+
+- Registering on a mailbox after `open()` throws — `open()` means the
+  handler set is complete. This rule is uniform across buffered and
+  unbuffered channels.
+- A second `open()` on the same mailbox throws.
+- `mailbox.destroy()` releases claims for actions that never opened — the
+  buffer is intact and another mailbox may take over. Opened actions stay
+  held and stay open; destroy never re-arms the gate.
+- `channel.destroy()` clears the buffer. Namespace teardown therefore cannot
+  resurrect buffered messages — recreation yields fresh channels (asserted
+  in tests).
+
+## Constraints amendments
+
+- Stage 2's "messages arriving before a handler is registered are missed"
+  holds for unbuffered channels and for opened actions; buffered channels
+  are the deliberate, opt-in exception.
+- Stage 2's "one handler per action per channel" is enforced *across
+  mailboxes* on buffered channels via claims. On unbuffered channels it
+  remains per-mailbox, as before.
+
+## Known accepted edge
+
+The drain loop is synchronous, so drained messages enter mailbox queues
+atomically with respect to live emits. One exception: the first drained
+message's handler starts inside the loop (the mailbox dequeues immediately),
+so a handler that *synchronously* emits back into the same channel during a
+drain can interleave its new message between drained items. Async emits
+cannot. Guarding this would require two-phase delivery machinery for an
+already-pathological pattern; it is documented instead.
+
+## Implementation notes
+
+The buffer is its own class (`MessageBuffer`, `src/buffer.ts`), mirroring the
+guard idiom: queue, per-action open set, per-action claim map keyed by
+claimant object identity. The channel↔mailbox handshake is three
+symbol-keyed methods on `Channel` (`claimAction`, `openActions`,
+`releaseClaims`) — imported by `mailbox.ts`, never exported from `index.ts`,
+and no-ops on unbuffered channels, which is the entire buffered/unbuffered
+branch on the mailbox side.

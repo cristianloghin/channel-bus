@@ -1,7 +1,9 @@
+import { MessageBuffer } from "./buffer";
 import { LoopGuard } from "./loop";
 import { INERT_SIGNAL } from "./signals";
 import { StormGuard } from "./storm";
 import type {
+  BufferConfig,
   ChannelContract,
   DebugMessage,
   EmitOptions,
@@ -13,14 +15,20 @@ import type {
   StormConfig,
 } from "./types";
 
+export const claimAction = Symbol("chbus.claimAction");
+export const openActions = Symbol("chbus.openActions");
+export const releaseClaims = Symbol("chbus.releaseClaims");
+
 export class Channel<C extends ChannelContract> {
   readonly name: string; // unqualified channel name
   readonly namespace: string; // '' if created directly on the root Bus
+  readonly bufferConfig: BufferConfig | null;
   readonly stormConfig: StormConfig; // resolved config this channel was created with
 
   private middlewares: Middleware<C>[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private subscribers = new Map<keyof C, Set<Handler<C, any>>>();
+  private buffer: MessageBuffer<C> | null;
   private stormGuard: StormGuard;
   private loopGuard = new LoopGuard();
   private destroyed = false;
@@ -32,16 +40,43 @@ export class Channel<C extends ChannelContract> {
   constructor(
     name: string,
     namespace: string,
+    bufferConfig: BufferConfig | null,
     stormConfig: StormConfig,
     onEmit: (msg: DebugMessage) => void,
   ) {
     this.name = name;
     this.namespace = namespace;
+    this.bufferConfig = bufferConfig;
     this.stormConfig = stormConfig;
     // Pass the qualified name so storm warnings include full context.
     const qualifiedName = namespace ? `${namespace}:${name}` : name;
+    this.buffer = bufferConfig
+      ? new MessageBuffer<C>(qualifiedName, bufferConfig)
+      : null;
     this.stormGuard = new StormGuard(qualifiedName, stormConfig);
     this.onEmit = onEmit;
+  }
+
+  // ── Buffer ──────────────────────────────────────────────────────────────────
+
+  [claimAction](action: keyof C, claimant: object): void {
+    this.buffer?.claim(action, claimant);
+  }
+
+  [releaseClaims](claimant: object): void {
+    this.buffer?.release(claimant);
+  }
+
+  [openActions](claimant: object): void {
+    if (this.destroyed || !this.buffer) return;
+    for (const message of this.buffer.open(claimant)) {
+      void this.deliver(
+        message.action,
+        message.payload,
+        { ...message, deferred: true },
+        INERT_SIGNAL,
+      );
+    }
   }
 
   // ── Middleware ──────────────────────────────────────────────────────────────
@@ -97,6 +132,10 @@ export class Channel<C extends ChannelContract> {
 
     this.runMiddleware(message, () => {
       this.forwardDebug(message);
+      if (this.buffer && !this.buffer.isOpen(action)) {
+        this.buffer.push(message);
+        return; // deliveryPromise stays null — emit resolves []
+      }
       deliveryPromise = this.deliver(action, payload, message, signal);
     });
 
@@ -107,6 +146,7 @@ export class Channel<C extends ChannelContract> {
 
   destroy(): void {
     this.destroyed = true;
+    this.buffer?.destroy();
     this.stormGuard.destroy();
     this.loopGuard.destroy();
     this.subscribers.clear();

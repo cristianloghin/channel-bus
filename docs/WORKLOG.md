@@ -6,7 +6,7 @@ recorded here as it lands, the live backlog is below. Newest work is appended.
 
 ## Outstanding
 
-(empty)
+Nothing at the moment.
 
 ## Completed
 
@@ -56,3 +56,45 @@ the React hooks so hosts never access channels by name at all (see that
 repo's `docs/tech-debt.md`, "From the first host integration") — that
 removes the common path into this trap; the guard here protects every other
 multi-party case.
+
+### 2026-08-13 — Buffer-until-open for command channels
+
+Implements the feature designed in
+[buffer-until-open.md](./buffer-until-open.md) (raised the same day as
+"replay", reframed to deferred delivery before any code was written). A
+channel opted in at creation (`{ buffer: true }`, or partial
+`{ maxMessages, maxAgeMs }` over defaults 100 / 10 s) starts with every
+action closed: emits run the guards, middleware, and the debug forward as
+always, then divert into a per-channel buffer in emit order. Mailboxes own
+the drain — `mailbox.on()` claims the action (a cross-mailbox claim throws
+at registration, before any state is touched), `mailbox.open()` declares
+the handler set complete and drains each claimed action's backlog through
+the normal queue, so interrupt rules coalesce stale contradictory commands
+for free. The gate is per action: late subsystems with disjoint actions
+each collect their own backlog on their own `open()`. Drained deliveries
+preserve the original message identity and carry `deferred: true`.
+
+Decisions of record:
+
+- The buffer is its own class (`MessageBuffer`, mirroring the guard idiom)
+  living in `Channel`; the trigger is mailbox-only via symbol-keyed internal
+  methods on `Channel` (`claimAction` / `openActions` / `releaseClaims`)
+  that no-op on unbuffered channels and are not exported from the package.
+- `open()` is a seal: registering after it throws, opening twice throws —
+  uniform across buffered and unbuffered channels. A mailbox that never
+  calls `open()` behaves exactly as before this change.
+- `destroy()` before open releases claims (another mailbox can take over
+  the intact buffer); after open the actions stay held and the gate stays
+  open — destroy never re-arms anything.
+- Accepted edge, documented in the spec: a handler that synchronously emits
+  into the same channel mid-drain can interleave ahead of later drained
+  items; async emits cannot.
+
+154 tests green, including the motivating scenario — commands emitted
+before the mailbox exists execute in emit order on `open()` — and the
+no-resurrection assertion across namespace teardown. New public API
+(`ChannelOptions.buffer`, `Mailbox.open()`, `Message.deferred`) with no
+breaking changes — warrants a minor-version bump.
+
+Downstream: `vms-video-player` adopts by moving command handling from plain
+`channel.on` into a mailbox, then deleting its visibility-sync reconciler.

@@ -20,7 +20,7 @@ const noop = () => {};
 function makeChannel<C extends Record<string, unknown>>(
   name = "ch",
 ): Channel<C> {
-  return new Channel<C>(name, "", STORM, noop);
+  return new Channel<C>(name, "", null, STORM, noop);
 }
 
 // Creates a deferred promise — resolve() to unblock an awaiting handler.
@@ -463,6 +463,251 @@ describe("Mailbox — type inference", () => {
   it("createMailbox lives on Bus", () => {
     const bus = createBus();
     expect(typeof bus.createMailbox).toBe("function");
+    bus.destroy();
+  });
+});
+
+// ── Buffered channels (buffer-until-open) ────────────────────────────────────
+
+const BUFFER = { maxMessages: 100, maxAgeMs: 10_000 };
+
+function makeBufferedChannel<C extends Record<string, unknown>>(
+  name = "ch",
+): Channel<C> {
+  return new Channel<C>(name, "", BUFFER, STORM, noop);
+}
+
+describe("Mailbox — buffered channels", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("drains commands emitted before the mailbox existed, in emit order", async () => {
+    const bus = createBus();
+    const ch = makeBufferedChannel<PlaybackContract>("commands");
+    const order: string[] = [];
+
+    // The host emits immediately — nobody is listening yet.
+    void ch.emit("seek", { position: 42 });
+    void ch.emit("tick", { frame: 1 });
+    void ch.emit("seek", { position: 7 });
+
+    // The core arrives a macrotask later.
+    await tick();
+    const mailbox = bus.createMailbox({ ch });
+    mailbox.on("ch", "seek", async ({ position }) => {
+      order.push(`seek-${position}`);
+    });
+    mailbox.on("ch", "tick", async ({ frame }) => {
+      order.push(`tick-${frame}`);
+    });
+
+    // Registered but not open — a further emit still buffers, nothing runs.
+    void ch.emit("seek", { position: 99 });
+    await tick();
+    expect(order).toEqual([]);
+
+    mailbox.open();
+    await tick();
+
+    expect(order).toEqual(["seek-42", "tick-1", "seek-7", "seek-99"]);
+
+    mailbox.destroy();
+    bus.destroy();
+  });
+
+  it("handlers see deferred: true on drained messages, absent on live ones", async () => {
+    const bus = createBus();
+    const ch = makeBufferedChannel<PlaybackContract>("commands");
+    const flags: Array<true | undefined> = [];
+
+    void ch.emit("tick", { frame: 1 });
+
+    const mailbox = bus.createMailbox({ ch });
+    mailbox.on("ch", "tick", async (_p, meta) => {
+      flags.push(meta.message.deferred);
+    });
+    mailbox.open();
+    await tick();
+
+    await ch.emit("tick", { frame: 2 });
+    await tick();
+
+    expect(flags).toEqual([true, undefined]);
+
+    mailbox.destroy();
+    bus.destroy();
+  });
+
+  it("interrupt rules apply to drained messages — replace coalesces mid-drain", async () => {
+    const bus = createBus();
+    const ch = makeBufferedChannel<PlaybackContract>("commands");
+
+    void ch.emit("seek", { position: 1 });
+    void ch.emit("seek", { position: 2 });
+
+    const mailbox = bus.createMailbox(
+      { ch },
+      { ch: { seek: [{ interrupts: "seek", mode: "replace" }] } },
+    );
+    const d = deferred();
+    const signals: AbortSignal[] = [];
+    const order: string[] = [];
+
+    mailbox.on("ch", "seek", async ({ position }, _meta, signal) => {
+      signals.push(signal);
+      order.push(`start-${position}`);
+      await d.promise;
+      order.push(`end-${position}`);
+    });
+
+    mailbox.open();
+    await tick();
+
+    // seek-1 started draining; seek-2's arrival replaced it mid-flight.
+    expect(order).toEqual(["start-1"]);
+    expect(signals[0].aborted).toBe(true);
+
+    d.resolve();
+    await tick();
+    expect(order).toEqual(["start-1", "end-1", "start-2", "end-2"]);
+
+    mailbox.destroy();
+    bus.destroy();
+  });
+
+  it("registering after open() throws", async () => {
+    const bus = createBus();
+    const ch = makeBufferedChannel<PlaybackContract>("commands");
+    const mailbox = bus.createMailbox({ ch });
+    mailbox.on("ch", "tick", async () => {});
+    mailbox.open();
+
+    expect(() => mailbox.on("ch", "seek", async () => {})).toThrow(
+      /after open/,
+    );
+
+    mailbox.destroy();
+    bus.destroy();
+  });
+
+  it("a second open() throws", () => {
+    const bus = createBus();
+    const ch = makeBufferedChannel<PlaybackContract>("commands");
+    const mailbox = bus.createMailbox({ ch });
+    mailbox.open();
+
+    expect(() => mailbox.open()).toThrow(/already open/);
+
+    mailbox.destroy();
+    bus.destroy();
+  });
+
+  it("two mailboxes claiming the same action collide at registration", () => {
+    const bus = createBus();
+    const ch = makeBufferedChannel<PlaybackContract>("commands");
+    const first = bus.createMailbox({ ch });
+    first.on("ch", "tick", async () => {});
+
+    const second = bus.createMailbox({ ch });
+    expect(() => second.on("ch", "tick", async () => {})).toThrow(
+      /already claimed by another mailbox/,
+    );
+
+    first.destroy();
+    second.destroy();
+    bus.destroy();
+  });
+
+  it("destroy before open releases the claim and leaves the buffer intact", async () => {
+    const bus = createBus();
+    const ch = makeBufferedChannel<PlaybackContract>("commands");
+    const order: string[] = [];
+
+    void ch.emit("tick", { frame: 1 });
+
+    const first = bus.createMailbox({ ch });
+    first.on("ch", "tick", async () => {
+      order.push("first");
+    });
+    first.destroy(); // never opened
+
+    const second = bus.createMailbox({ ch });
+    second.on("ch", "tick", async ({ frame }) => {
+      order.push(`second-${frame}`);
+    });
+    second.open();
+    await tick();
+
+    expect(order).toEqual(["second-1"]);
+
+    second.destroy();
+    bus.destroy();
+  });
+
+  it("destroy after open keeps the action held", () => {
+    const bus = createBus();
+    const ch = makeBufferedChannel<PlaybackContract>("commands");
+    const first = bus.createMailbox({ ch });
+    first.on("ch", "tick", async () => {});
+    first.open();
+    first.destroy();
+
+    const second = bus.createMailbox({ ch });
+    expect(() => second.on("ch", "tick", async () => {})).toThrow(
+      /already claimed/,
+    );
+
+    second.destroy();
+    bus.destroy();
+  });
+
+  it("two mailboxes drain disjoint actions independently, each on its own open", async () => {
+    const bus = createBus();
+    const ch = makeBufferedChannel<PlaybackContract>("commands");
+    const order: string[] = [];
+
+    void ch.emit("tick", { frame: 1 });
+    void ch.emit("seek", { position: 5 });
+
+    const playback = bus.createMailbox({ ch });
+    playback.on("ch", "tick", async ({ frame }) => {
+      order.push(`tick-${frame}`);
+    });
+    playback.open();
+    await tick();
+
+    // Playback's backlog arrived; seek is still buffered.
+    expect(order).toEqual(["tick-1"]);
+
+    const seeker = bus.createMailbox({ ch });
+    seeker.on("ch", "seek", async ({ position }) => {
+      order.push(`seek-${position}`);
+    });
+    seeker.open();
+    await tick();
+
+    expect(order).toEqual(["tick-1", "seek-5"]);
+
+    playback.destroy();
+    seeker.destroy();
+    bus.destroy();
+  });
+
+  it("open() on a mailbox over unbuffered channels is harmless", async () => {
+    const bus = createBus();
+    const ch = makeChannel<PlaybackContract>("playback");
+    const mailbox = bus.createMailbox({ ch });
+    const cb = vi.fn().mockResolvedValue(undefined);
+    mailbox.on("ch", "tick", cb);
+
+    expect(() => mailbox.open()).not.toThrow();
+
+    await ch.emit("tick", { frame: 1 });
+    await tick();
+    expect(cb).toHaveBeenCalledOnce();
+
+    mailbox.destroy();
     bus.destroy();
   });
 });

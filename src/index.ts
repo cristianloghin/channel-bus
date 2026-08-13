@@ -1,19 +1,20 @@
-export { Bus, NamespacedBus, createBus } from './bus'
-export { Channel } from './channel'
-export { createLogger } from './logger'
-export { combineSignals } from './signals'
-export { Mailbox } from './mailbox'
-export type { MailboxRules, MailboxRuleClause } from './mailbox'
+export { Bus, createBus, NamespacedBus } from "./bus";
+export { Channel } from "./channel";
+export { createLogger } from "./logger";
+export { Mailbox } from "./mailbox";
+export type { MailboxRuleClause, MailboxRules } from "./mailbox";
+export { combineSignals } from "./signals";
 export type {
+  BufferConfig,
+  BusConfig,
   ChannelContract,
-  Message,
+  ChannelOptions,
   DebugMessage,
-  Middleware,
+  EmitOptions,
   Handler,
+  LoggerOptions,
+  Message,
+  Middleware,
   SettledResult,
   StormConfig,
-  BusConfig,
-  ChannelOptions,
-  EmitOptions,
-  LoggerOptions,
-} from './types'
+} from "./types";
