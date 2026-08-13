@@ -1,9 +1,10 @@
 # Feature request — buffer-until-open for command channels
 
-**Status:** proposed. The mechanism has been through one design discussion
-(2026-08-13) and its shape is agreed — the buffer lives in the channel, only
-mailboxes drain it, drains are per-action claims — but nothing is implemented
-and the items under "Still open" are real.
+**Status:** implemented, 2026-08-13. The mechanism shipped as designed below —
+buffer in the channel, mailbox-owned drains, per-action claims. The normative
+description now lives in [chbus-spec.md](../chbus-spec.md), Stage 3; this
+document remains the design record. The items that were open when it was
+written are resolved at the end.
 
 **Raised by:** `vms-video-player`, 2026-08-13. That integration works around
 the gap today; the workaround is what makes the case.
@@ -236,33 +237,31 @@ deletes that edge instead of guarding it with an error, keeps `Channel`'s
 public surface unchanged, and bets on the same direction as the discussion
 below about retiring direct subscriptions.
 
-## Still open
+## Resolved at implementation (2026-08-13)
 
-- **Bounds.** Count and age, per channel. They can be small — the buffer
-  lives for a startup window, not a channel lifetime — and the failure mode
-  for an action nobody ever claims is "drop, same as today," not unbounded
-  memory. Defaults need choosing.
-- **What drained handlers see.** Preserve the original id, timestamp, sender
-  and coordination chain; do not re-run middleware or re-emit debug events.
-  Mark drained deliveries (e.g. `deferred: true`) so debug tooling can
-  distinguish them — buffered messages indistinguishable from live traffic is
-  how deferral-induced bugs become unfindable. The original emitter's
-  `AbortSignal` is expired by drain time, so a drained delivery carries the
-  mailbox's own signal only (the existing `combineSignals` path already
-  accepts an absent emitter signal).
-- **The handshake.** How the channel exposes the claim/drain capability to
-  `Mailbox` without making it public API — a symbol-keyed method, a
-  friend-style accessor via the `Bus`, or construction-time wiring. Naming
-  too: `{ buffered: true }`, `open()` vs `seal()`.
-- **Interaction with `destroy()`.** The buffer clears with the channel.
-  `NamespacedBus.destroy()` (0.5.0) drops every channel in a namespace and
-  reuse yields fresh channels, which gives no-resurrection for free — but it
-  should be asserted.
-- **Mailboxes spanning multiple channels.** A mailbox already keeps one queue
-  per channel context, so `open()` draining each channel's claimed subset
-  independently is consistent with live semantics — no cross-channel ordering
-  is implied today either. Should be stated in the spec rather than left to
+- **Bounds.** `{ maxMessages: 100, maxAgeMs: 10_000 }` by default, overridable
+  per channel via `buffer: { … }`. Eviction is lazy (push, drain, size reads),
+  oldest-first, one `[chbus]` warning per dropped message. An unclaimed
+  action degrades to today's behavior: its messages age out.
+- **What drained handlers see.** As proposed: original id, timestamp, sender
+  and coordination chain preserved; middleware, guards, and the debug wiretap
+  not re-run; `deferred: true` marks the delivered copy; the delivery carries
+  an inert signal and the mailbox combines its own as usual.
+- **The handshake.** Three symbol-keyed methods on `Channel` (`claimAction`,
+  `openActions`, `releaseClaims`), imported by `mailbox.ts`, never exported
+  from `index.ts`, no-ops on unbuffered channels. Naming settled as
+  `{ buffer: true }` and `open()`.
+- **Interaction with `destroy()`.** The buffer clears with the channel, and
+  the no-resurrection property across `NamespacedBus.destroy()` + recreation
+  is asserted in `bus.test.ts`.
+- **Mailboxes spanning multiple channels.** Each channel context claims and
+  opens independently; stated in the spec (Stage 3) rather than left to
   inference.
+- **One more rule that emerged during implementation:** claims are taken in
+  `register()` *before* any other state is touched, so a cross-mailbox
+  collision throws with nothing half-registered; and `destroy()` releases
+  only never-opened claims, so an opened action stays held by its (dead)
+  owner rather than silently becoming grabbable.
 
 ## Related: retiring direct channel subscriptions
 

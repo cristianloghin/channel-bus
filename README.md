@@ -138,6 +138,16 @@ mailbox.on('camera', 'camera-select', async (payload, meta, signal) => {
 
 One handler per action per channel. Registering a second handler for the same action throws immediately.
 
+### Declaring the handler set complete — `open()`
+
+```ts
+mailbox.open()
+```
+
+`open()` marks the mailbox's handler set as complete. On [buffered channels](#buffered-channels) this is the drain trigger: every action this mailbox registered is opened and its buffered backlog is delivered in emit order. On unbuffered channels `open()` changes nothing about delivery — it only seals the handler set.
+
+Two rules come with it: registering a handler after `open()` throws, and calling `open()` twice throws. If you never call `open()`, mailbox behavior is exactly as it always was.
+
 ### Interrupt modes
 
 Rules are keyed by the **arriving** action and specify which running action they interrupt and how.
@@ -455,6 +465,49 @@ const telemetry = bus.channel<TelemetryContract>('telemetry', {
 
 ---
 
+## Buffered channels
+
+By default a channel is stateless: a message emitted before a handler is registered is gone. That is the right default, but it has no escape hatch for one real situation — a channel created eagerly so emitters can fire immediately, while the subsystem that handles those messages is constructed a beat later (the classic case: hooks create command channels on first render; the core that executes commands attaches a macrotask later). Every command emitted in that window is silently dropped.
+
+A **buffered channel** closes that window:
+
+```ts
+const commands = bus.channel<CommandContract>('commands', { buffer: true })
+
+// Or with custom bounds (defaults shown):
+const commands = bus.channel<CommandContract>('commands', {
+  buffer: { maxMessages: 100, maxAgeMs: 10_000 },
+})
+```
+
+On a buffered channel every action starts **closed**. Messages emitted to a closed action are held in emit order — after middleware and the guards have run — instead of being delivered. They wait until a mailbox **claims** the action (by registering a handler) and declares itself **open**:
+
+```ts
+// The host emits immediately — nobody is listening yet
+commands.emit('suspend', { reason: 'offscreen' }, { from: 'host' })
+
+// ...one macrotask later, the core arrives:
+const mailbox = bus.createMailbox({ commands })
+mailbox.on('commands', 'suspend', async (p) => player.suspend(p))
+mailbox.on('commands', 'resume', async () => player.resume())
+mailbox.open() // ← drains the backlog, in emit order
+```
+
+Drained messages flow through the normal mailbox queue, so interrupt rules apply to them exactly as to live traffic — a buffered `suspend` followed by a `resume` under a `replace` rule coalesces instead of blindly executing both. After the drain the action is **open**: live emissions pass straight through, and nothing is retained again.
+
+The semantics in brief:
+
+- **Delivery is exactly-once — this is deferral, not replay.** A subscriber arriving after an action opened gets nothing old.
+- **The gate is per action.** Two subsystems handling different actions on one channel can each arrive late and collect their own backlog on their own `open()`.
+- **Only mailboxes drain.** Registering on a buffered channel claims the action for that mailbox; a second mailbox claiming the same action throws at registration time. Plain `channel.on` subscribers can never open anything — but any that are attached when a drain runs receive the drained messages (their first and only delivery).
+- **Drained messages are marked.** Handlers see the original `id`, `from`, `timestamp`, and `coordinationChain`, plus `deferred: true` on `meta.message`. Middleware and the debug wiretap ran at emit time and are not re-run.
+- **Bounds are enforced.** Oldest-first over `maxMessages`, expiry over `maxAgeMs`, each drop logged with a `[chbus]` warning. An action nobody ever claims degrades to ordinary stateless behavior — its messages age out.
+- **`open()` is a seal.** Registering after `open()` throws; a second `open()` throws. `mailbox.destroy()` before `open()` releases the claims so another mailbox can take over the intact buffer; after `open()` the actions stay held and stay open.
+
+Buffering is opt-in per channel — a command channel wants it; a state channel that republishes periodically does not. Like `storm`, the `buffer` config is part of the channel's identity: a later access requesting a conflicting config throws.
+
+---
+
 ## Debug wiretap
 
 Every message that completes the emit flow is automatically forwarded to the debug wiretap — emitters and subscribers are completely unaware of it. It is only accessible on the root `Bus`.
@@ -554,6 +607,19 @@ bus.destroy()
 
 ---
 
+### `ChannelOptions`
+
+Passed as the second argument to `bus.channel()` / `ns.channel()`. Options are part of the channel's identity — a later access requesting a conflicting config throws.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `storm` | `Partial<StormConfig>` | bus config | Per-channel storm override |
+| `buffer` | `true \| Partial<BufferConfig>` | — (unbuffered) | Hold messages until a mailbox opens — see [Buffered channels](#buffered-channels) |
+
+`BufferConfig`: `maxMessages` (default `100`), `maxAgeMs` (default `10_000`).
+
+---
+
 ### `Bus`
 
 | Method | Returns | Description |
@@ -572,8 +638,9 @@ Created via `bus.createMailbox()`.
 
 | Method | Returns | Description |
 |---|---|---|
-| `on(channelKey, action, handler)` | `void` | Register a handler. Throws if a handler is already registered for this action. |
-| `destroy()` | `void` | Unsubscribe all channels and abort any in-flight handler. |
+| `on(channelKey, action, handler)` | `void` | Register a handler. Throws if a handler is already registered for this action, if another mailbox claimed it on a buffered channel, or after `open()`. |
+| `open()` | `void` | Declare the handler set complete. Drains buffered channels; throws on a second call. |
+| `destroy()` | `void` | Unsubscribe all channels, abort any in-flight handler, release unopened claims. |
 
 **Handler signature:**
 
@@ -610,6 +677,7 @@ type MailboxRules<C> = {
 |---|---|---|
 | `name` | `string` | Unqualified channel name. |
 | `namespace` | `string` | Namespace, or `''` if none. |
+| `bufferConfig` | `BufferConfig \| null` | Resolved buffer config, or `null` when unbuffered. |
 | `use(middleware)` | `this` | Append middleware to the pipeline. |
 | `on(action, handler, options?)` | `() => void` | Register an async handler. Returns unsubscribe. |
 | `emit(action, payload, options?)` | `Promise<SettledResult[]>` | Fan-out to all handlers. Awaitable or fire-and-forget. |
