@@ -374,9 +374,13 @@ in [docs/buffer-until-open.md](./docs/buffer-until-open.md).
   handler set is complete. This rule is uniform across buffered and
   unbuffered channels.
 - A second `open()` on the same mailbox throws.
-- `mailbox.destroy()` releases claims for actions that never opened — the
-  buffer is intact and another mailbox may take over. Opened actions stay
-  held and stay open; destroy never re-arms the gate.
+- `mailbox.destroy()` releases every claim the mailbox held, opened or not.
+  Claims police *concurrent* mailboxes; a dead one must not block its
+  successor (sequential core replacement on a reused namespace is a
+  legitimate lifecycle — found by the first consumer). Before open, the
+  buffer is intact and a successor takes over the backlog; after open, the
+  gate stays open — destroy never re-arms it — and a successor simply
+  handles live traffic.
 - `channel.destroy()` clears the buffer. Namespace teardown therefore cannot
   resurrect buffered messages — recreation yields fresh channels (asserted
   in tests).

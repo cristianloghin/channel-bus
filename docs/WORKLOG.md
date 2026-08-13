@@ -98,3 +98,25 @@ breaking changes — warrants a minor-version bump.
 
 Downstream: `vms-video-player` adopts by moving command handling from plain
 `channel.on` into a mailbox, then deleting its visibility-sync reconciler.
+
+### 2026-08-13 — Release all claims on mailbox destroy
+
+Revises one buffer-until-open decision from the entry above, found while
+writing the adoption guide for `vms-video-player` (the first consumer).
+`destroy()` originally kept an opened action's claim held by its dead owner
+— "enforce one handler per action for real." The consumer showed the cost:
+a host that replaces one player core with another on the same namespace
+*without disposing it* gets the memoised channels back, and the dead core's
+retained claims make the successor's registration throw. Sequential
+replacement is a legitimate lifecycle; claims exist to prevent double
+execution among mailboxes that are *alive*, and a dead mailbox has no claim
+to defend.
+
+`destroy()` now releases every claim the mailbox held. Nothing else moves:
+the gate never re-arms (opened actions stay open, nothing re-buffers), a
+pre-open destroy still hands a successor the intact buffer, and live
+mailboxes still conflict at registration. One-line change in
+`MessageBuffer.release()`; the "destroy after open keeps the action held"
+test flipped to assert the successor takes over live traffic.
+
+Shipped after 0.6.0 was published — goes out as a patch release.

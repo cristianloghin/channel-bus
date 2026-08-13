@@ -56,14 +56,14 @@ export class MessageBuffer<C extends ChannelContract> {
     return claimedMessages;
   }
 
+  // Frees every claim held by this claimant, opened or not. Open actions stay
+  // open (the gate never re-arms) — releasing only frees ownership, so a
+  // successor mailbox can register the same actions after this one is
+  // destroyed. Claims police concurrent mailboxes, not dead ones.
   release(claimant: object): void {
-    const unopenedActions = new Set<keyof C>();
-    this.claims.forEach((c, a) => {
-      if (c === claimant && !this.openActions.has(a)) {
-        unopenedActions.add(a);
-      }
-    });
-    unopenedActions.forEach((a) => this.claims.delete(a));
+    for (const [action, holder] of this.claims) {
+      if (holder === claimant) this.claims.delete(action);
+    }
   }
 
   private evictExpired(): void {

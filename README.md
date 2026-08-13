@@ -502,7 +502,7 @@ The semantics in brief:
 - **Only mailboxes drain.** Registering on a buffered channel claims the action for that mailbox; a second mailbox claiming the same action throws at registration time. Plain `channel.on` subscribers can never open anything — but any that are attached when a drain runs receive the drained messages (their first and only delivery).
 - **Drained messages are marked.** Handlers see the original `id`, `from`, `timestamp`, and `coordinationChain`, plus `deferred: true` on `meta.message`. Middleware and the debug wiretap ran at emit time and are not re-run.
 - **Bounds are enforced.** Oldest-first over `maxMessages`, expiry over `maxAgeMs`, each drop logged with a `[chbus]` warning. An action nobody ever claims degrades to ordinary stateless behavior — its messages age out.
-- **`open()` is a seal.** Registering after `open()` throws; a second `open()` throws. `mailbox.destroy()` before `open()` releases the claims so another mailbox can take over the intact buffer; after `open()` the actions stay held and stay open.
+- **`open()` is a seal.** Registering after `open()` throws; a second `open()` throws. `mailbox.destroy()` releases the mailbox's claims — before `open()` a successor mailbox takes over the intact buffer; after `open()` the actions stay open (the gate never re-arms) and a successor simply handles live traffic. Claims only ever conflict between *live* mailboxes.
 
 Buffering is opt-in per channel — a command channel wants it; a state channel that republishes periodically does not. Like `storm`, the `buffer` config is part of the channel's identity: a later access requesting a conflicting config throws.
 
@@ -640,7 +640,7 @@ Created via `bus.createMailbox()`.
 |---|---|---|
 | `on(channelKey, action, handler)` | `void` | Register a handler. Throws if a handler is already registered for this action, if another mailbox claimed it on a buffered channel, or after `open()`. |
 | `open()` | `void` | Declare the handler set complete. Drains buffered channels; throws on a second call. |
-| `destroy()` | `void` | Unsubscribe all channels, abort any in-flight handler, release unopened claims. |
+| `destroy()` | `void` | Unsubscribe all channels, abort any in-flight handler, release the mailbox's claims. |
 
 **Handler signature:**
 

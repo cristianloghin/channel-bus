@@ -200,12 +200,16 @@ describe("MessageBuffer", () => {
       expect(() => buffer.claim("a", mailboxB)).not.toThrow();
     });
 
-    it("release() keeps opened claims held", () => {
+    it("release() frees opened claims too — the gate stays open", () => {
       const buffer = makeBuffer();
       buffer.claim("a", mailboxA);
       buffer.open(mailboxA);
       buffer.release(mailboxA);
-      expect(() => buffer.claim("a", mailboxB)).toThrow(/already claimed/);
+
+      // A successor can take over the action…
+      expect(() => buffer.claim("a", mailboxB)).not.toThrow();
+      // …and the gate never re-arms: the action is still open.
+      expect(buffer.isOpen("a")).toBe(true);
     });
 
     it("destroy() clears claims", () => {

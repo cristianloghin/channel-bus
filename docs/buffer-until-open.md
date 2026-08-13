@@ -259,9 +259,16 @@ below about retiring direct subscriptions.
   inference.
 - **One more rule that emerged during implementation:** claims are taken in
   `register()` *before* any other state is touched, so a cross-mailbox
-  collision throws with nothing half-registered; and `destroy()` releases
-  only never-opened claims, so an opened action stays held by its (dead)
-  owner rather than silently becoming grabbable.
+  collision throws with nothing half-registered.
+- **Revised same day, on first-consumer evidence:** `destroy()` originally
+  released only never-opened claims, on the theory that an opened action
+  should stay held rather than silently become grabbable. `vms-video-player`
+  showed the failure mode: sequential core replacement on a reused,
+  undisposed namespace gets the memoised channels back, and the dead core's
+  retained claims block the successor's registration. Claims exist to police
+  *concurrent* mailboxes, not dead ones — so `destroy()` now releases every
+  claim it held. The gate still never re-arms: an opened action stays open,
+  and a successor simply handles live traffic.
 
 ## Related: retiring direct channel subscriptions
 

@@ -645,18 +645,32 @@ describe("Mailbox — buffered channels", () => {
     bus.destroy();
   });
 
-  it("destroy after open keeps the action held", () => {
+  it("destroy after open frees the claim — a successor takes over live traffic", async () => {
     const bus = createBus();
     const ch = makeBufferedChannel<PlaybackContract>("commands");
+    const order: string[] = [];
+
+    // Sequential core replacement on one channel: first mailbox lives a full
+    // lifecycle, then a second one registers the same action.
     const first = bus.createMailbox({ ch });
-    first.on("ch", "tick", async () => {});
+    first.on("ch", "tick", async () => {
+      order.push("first");
+    });
     first.open();
     first.destroy();
 
     const second = bus.createMailbox({ ch });
-    expect(() => second.on("ch", "tick", async () => {})).toThrow(
-      /already claimed/,
-    );
+    expect(() =>
+      second.on("ch", "tick", async ({ frame }) => {
+        order.push(`second-${frame}`);
+      }),
+    ).not.toThrow();
+    second.open(); // action already open — drains nothing, re-buffers nothing
+
+    await ch.emit("tick", { frame: 1 });
+    await tick();
+
+    expect(order).toEqual(["second-1"]);
 
     second.destroy();
     bus.destroy();
