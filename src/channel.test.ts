@@ -327,3 +327,74 @@ describe("Channel — debug wiretap", () => {
     expect(msg.qualifiedChannel).toBe("events");
   });
 });
+
+describe("Channel — buffering", () => {
+  const BUFFER_CONFIG = { maxMessages: 100, maxAgeMs: 10_000 };
+
+  function makeBufferedChannel(onEmit = noop as (msg: DebugMessage) => void) {
+    return new Channel<TestContract>(
+      "test",
+      "",
+      BUFFER_CONFIG,
+      STORM_CONFIG,
+      onEmit,
+    );
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("a closed action's emit resolves [] and does not call a subscribed handler", async () => {
+    const ch = makeBufferedChannel();
+    const cb = vi.fn().mockResolvedValue(undefined);
+    ch.on("test:ping", cb);
+
+    const results = await ch.emit("test:ping", { value: 1 });
+
+    expect(results).toEqual([]);
+    expect(cb).not.toHaveBeenCalled();
+  });
+
+  it("buffers even with no subscribers at all (no warning, no throw)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ch = makeBufferedChannel();
+    const results = await ch.emit("test:ping", { value: 1 });
+    expect(results).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("buffered emits still reach the debug wiretap", async () => {
+    const onEmit = vi.fn();
+    const ch = makeBufferedChannel(onEmit);
+    await ch.emit("test:ping", { value: 1 });
+    expect(onEmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("a message dropped by middleware never reaches the buffer", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ch = new Channel<TestContract>(
+      "test",
+      "",
+      { maxMessages: 1, maxAgeMs: 10_000 },
+      STORM_CONFIG,
+      noop,
+    );
+    await ch.emit("test:ping", { value: 1 }); // fills the one-slot buffer
+
+    ch.use(() => {}); // swallows every subsequent emit — never calls next()
+    await ch.emit("test:ping", { value: 2 });
+
+    // Had the dropped message reached the buffer, the one-slot bound would
+    // have evicted the first message with an overflow warning.
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("unbuffered channels deliver immediately (regression)", async () => {
+    const ch = makeChannel();
+    const cb = vi.fn().mockResolvedValue(undefined);
+    ch.on("test:ping", cb);
+    await ch.emit("test:ping", { value: 1 });
+    expect(cb).toHaveBeenCalledOnce();
+  });
+});

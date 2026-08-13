@@ -1,3 +1,4 @@
+import { MessageBuffer } from "./buffer";
 import { LoopGuard } from "./loop";
 import { INERT_SIGNAL } from "./signals";
 import { StormGuard } from "./storm";
@@ -23,6 +24,7 @@ export class Channel<C extends ChannelContract> {
   private middlewares: Middleware<C>[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private subscribers = new Map<keyof C, Set<Handler<C, any>>>();
+  private buffer: MessageBuffer<C> | null;
   private stormGuard: StormGuard;
   private loopGuard = new LoopGuard();
   private destroyed = false;
@@ -44,6 +46,9 @@ export class Channel<C extends ChannelContract> {
     this.stormConfig = stormConfig;
     // Pass the qualified name so storm warnings include full context.
     const qualifiedName = namespace ? `${namespace}:${name}` : name;
+    this.buffer = bufferConfig
+      ? new MessageBuffer<C>(qualifiedName, bufferConfig)
+      : null;
     this.stormGuard = new StormGuard(qualifiedName, stormConfig);
     this.onEmit = onEmit;
   }
@@ -101,6 +106,10 @@ export class Channel<C extends ChannelContract> {
 
     this.runMiddleware(message, () => {
       this.forwardDebug(message);
+      if (this.buffer && !this.buffer.isOpen(action)) {
+        this.buffer.push(message);
+        return; // deliveryPromise stays null — emit resolves []
+      }
       deliveryPromise = this.deliver(action, payload, message, signal);
     });
 
@@ -111,6 +120,7 @@ export class Channel<C extends ChannelContract> {
 
   destroy(): void {
     this.destroyed = true;
+    this.buffer?.destroy();
     this.stormGuard.destroy();
     this.loopGuard.destroy();
     this.subscribers.clear();
