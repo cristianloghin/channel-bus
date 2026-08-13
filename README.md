@@ -389,6 +389,12 @@ ns2.channel<UIContract>('ui')   // registered as 'analytics:ui' — distinct ins
 
 Multiple calls to `bus.namespace('player')` return independent proxy objects but write to the same underlying channel registry — `ns1.channel('playback')` and `ns2.channel('playback')` (same namespace) return the same `Channel` instance.
 
+Destroying any proxy destroys and unregisters every channel in that namespace. Other namespaces and root channels are unaffected, and later access creates fresh channel instances.
+
+```ts
+ns1.destroy()
+```
+
 ---
 
 ## Loop detection
@@ -515,11 +521,14 @@ All filter arrays are optional and independent — combine them to narrow output
 
 ## Lifecycle
 
-Channels and the bus expose a `destroy()` method that clears all subscribers, cancels pending timers, and releases internal state. Calling `emit()` on a destroyed channel is a no-op and logs a warning.
+Channels, namespaced buses, and the root bus expose a `destroy()` method that clears subscribers, cancels pending timers, and releases their internal state. Calling `emit()` on a destroyed channel is a no-op and logs a warning.
 
 ```ts
 // Destroy a single channel:
 playback.destroy()
+
+// Destroy all channels in one namespace:
+playerBus.destroy()
 
 // Destroy the bus and all its channels:
 bus.destroy()
@@ -591,6 +600,7 @@ type MailboxRules<C> = {
 |---|---|---|
 | `namespace` | `string` | The namespace this proxy is scoped to. |
 | `channel<C>(name, options?)` | `Channel<C>` | Get or create a namespaced channel. |
+| `destroy()` | `void` | Destroy and unregister every channel in this namespace. |
 
 ---
 
